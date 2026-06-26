@@ -1,4 +1,4 @@
-import sqlite3
+import os
 import re
 import logging
 from pathlib import Path
@@ -6,10 +6,15 @@ import ollama
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+
+# Load env variables from .env
+load_dotenv(override=True)
 
 app = FastAPI(title="NL to SQL Chatbot API")
 
-# Enable CORS for Streamlit front‑end
+# Enable CORS for Streamlit front-end
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,22 +24,42 @@ app.add_middleware(
 )
 
 class QueryRequest(BaseModel):
-    db_path: str
     user_question: str
-    db_schema: str = "" # Optional
-    chat_history: list = [] # Optional chat history for context
+    db_schema: str = ""        # Optional
+    chat_history: list = []    # Optional chat history for context
 
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
 
-OLLAMA_MODEL   = "llama3.1"
-MAX_RETRIES    = 3
-MAX_ROWS       = 500          # cap result rows to avoid flooding UI
-DB_TIMEOUT     = 10.0         # seconds before query times out
+OLLAMA_MODEL = "llama3.1"
+MAX_RETRIES  = 3
+MAX_ROWS     = 500      # cap result rows to avoid flooding UI
+DB_TIMEOUT   = 10.0    # seconds before query times out
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
+
+from sqlalchemy.engine import URL
+
+# Build connection URI programmatically from environment variables using URL.create
+DB_DIALECT = os.getenv("DB_DIALECT", "mysql")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "3306")
+DB_NAME = os.getenv("DB_NAME", "company_data")
+
+db_url_obj = URL.create(
+    drivername=f"{DB_DIALECT}+pymysql",
+    username=DB_USER,
+    password=DB_PASSWORD,
+    host=DB_HOST,
+    port=int(DB_PORT),
+    database=DB_NAME
+)
+DB_URL = db_url_obj.render_as_string(hide_password=False)
+engine = create_engine(DB_URL)
 
 # ─────────────────────────────────────────────
 # BANNED SQL KEYWORDS  (read-only enforcement)
@@ -49,62 +74,74 @@ WRITE_KEYWORDS = [
 
 DANGEROUS_PATTERNS = [
     r";\s*(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)",   # SQL injection via semicolon
-    r"--\s*",                                          # inline SQL comment tricks
-    r"/\*.*?\*/",                                      # block comments
-    r"UNION\s+ALL\s+SELECT.*FROM\s+sqlite_",           # schema dump via UNION
+    r"--\s*",                                           # inline SQL comment tricks
+    r"/\*.*?\*/",                                       # block comments
+    r"UNION\s+ALL\s+SELECT.*FROM\s+sqlite_",            # schema dump via UNION
+    r"UNION\s+ALL\s+SELECT.*FROM\s+information_schema", # schema dump via UNION (MySQL schema)
 ]
 
 # ─────────────────────────────────────────────
 # SCHEMA EXTRACTION
 # ─────────────────────────────────────────────
 
-def get_schema(db_path: str) -> str:
+def get_db_schema() -> str:
     """
-    Extract full schema from SQLite DB using read-only URI.
+    Extract full schema from MySQL DB.
     Returns a clean human-readable schema string for the LLM prompt.
     """
-    uri = f"file:{db_path}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, timeout=DB_TIMEOUT)
-        cursor = conn.cursor()
+        with engine.connect() as conn:
+            query_cols = text("""
+                SELECT table_name, column_name, data_type, column_key, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema = :db_name
+                ORDER BY table_name, ordinal_position
+            """)
+            cols_result = conn.execute(query_cols, {"db_name": DB_NAME}).fetchall()
 
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        # Extract the table name string from each tuple
-        tables = [row[0] for row in cursor.fetchall()]
+            if not cols_result:
+                return "No tables found in database."
 
-        if not tables:
-            return "No tables found in database."
+            # Group columns by table
+            tables_dict = {}
+            for row in cols_result:
+                t_name, col_name, dtype, col_key, is_null, col_default = row
+                if t_name not in tables_dict:
+                    tables_dict[t_name] = []
+                tables_dict[t_name].append({
+                    "name": col_name,
+                    "type": dtype,
+                    "pk": col_key == "PRI",
+                    "nullable": is_null == "YES",
+                    "default": col_default
+                })
 
-        schema_parts = []
-        for table in tables:
-            cursor.execute(f"PRAGMA table_info('{table}')")
-            columns = cursor.fetchall()
-            col_lines = []
-            for col in columns:
-                col_id, name, dtype, notnull, default, pk = col
-                parts = [f"  {name} {dtype}"]
-                if pk:
-                    parts.append("PRIMARY KEY")
-                if notnull:
-                    parts.append("NOT NULL")
-                if default is not None:
-                    parts.append(f"DEFAULT {default}")
-                col_lines.append(" ".join(parts))
+            schema_parts = []
+            for t_name, cols in tables_dict.items():
+                col_lines = []
+                for col in cols:
+                    parts = [f"  {col['name']} {col['type'].upper()}"]
+                    if col['pk']:
+                        parts.append("PRIMARY KEY")
+                    if not col['nullable']:
+                        parts.append("NOT NULL")
+                    if col['default'] is not None:
+                        parts.append(f"DEFAULT {col['default']}")
+                    col_lines.append(" ".join(parts))
 
-            try:
-                cursor.execute(f"SELECT COUNT(*) FROM '{table}'")
-                row_count = cursor.fetchone()[0]
-                count_hint = f"  -- {row_count} rows"
-            except Exception:
-                count_hint = ""
+                try:
+                    count_result = conn.execute(text(f"SELECT COUNT(*) FROM `{t_name}`"))
+                    row_count = count_result.scalar()
+                    count_hint = f"  -- {row_count} rows"
+                except Exception:
+                    count_hint = ""
 
-            schema_parts.append(
-                f"Table: {table}{count_hint}\n"
-                f"Columns:\n" + "\n".join(col_lines)
-            )
-        conn.close()
+                schema_parts.append(
+                    f"Table: {t_name}{count_hint}\n"
+                    f"Columns:\n" + "\n".join(col_lines)
+                )
         return "\n\n".join(schema_parts)
-    except sqlite3.OperationalError as e:
+    except Exception as e:
         log.error(f"Schema extraction failed: {e}")
         raise RuntimeError(f"Cannot read database: {e}")
 
@@ -141,12 +178,12 @@ def validate_sql_safety(sql: str) -> tuple[bool, str]:
     return True, "OK"
 
 # ─────────────────────────────────────────────
-# SQL EXECUTION (read-only URI)
+# SQL EXECUTION
 # ─────────────────────────────────────────────
 
-def execute_sql(db_path: str, sql: str) -> tuple[list[str], list[tuple]]:
+def execute_sql(sql: str) -> tuple[list[str], list[tuple]]:
     """
-    Execute a SELECT query using strict read-only SQLite URI.
+    Execute a SELECT query using strict read-only execution.
     Returns (column_names, rows).
     """
     sql_clean = sql.strip().rstrip(";")
@@ -154,33 +191,14 @@ def execute_sql(db_path: str, sql: str) -> tuple[list[str], list[tuple]]:
     if not is_safe:
         raise ValueError(f"SQL safety check failed: {reason}")
 
-    uri = f"file:{db_path}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, timeout=DB_TIMEOUT)
-        conn.set_authorizer(_read_only_authorizer)   # extra DB-level authorizer
-        cursor = conn.cursor()
-        cursor.execute(sql_clean)
-        rows = cursor.fetchmany(MAX_ROWS)
-        cols = [description for description in cursor.description]
-        conn.close()
-        return cols, rows
-    except sqlite3.OperationalError as e:
+        with engine.connect() as conn:
+            result = conn.execute(text(sql_clean))
+            cols = list(result.keys())
+            rows = [tuple(row) for row in result.fetchmany(MAX_ROWS)]
+            return cols, rows
+    except Exception as e:
         raise ValueError(f"SQL execution error: {e}")
-
-def _read_only_authorizer(action_code, arg1, arg2, db_name, trigger):
-    """
-    SQLite authorizer callback — third line of defense.
-    Allows only SELECT and READ operations.
-    """
-    ALLOWED = {
-        sqlite3.SQLITE_SELECT,
-        sqlite3.SQLITE_READ,
-        sqlite3.SQLITE_FUNCTION,   # allow built-in functions like COUNT, SUM
-    }
-    if action_code in ALLOWED:
-        return sqlite3.SQLITE_OK
-    log.warning(f"Authorizer blocked action: {action_code} on {arg1}.{arg2}")
-    return sqlite3.SQLITE_DENY
 
 # ─────────────────────────────────────────────
 # PROMPT BUILDER
@@ -195,14 +213,15 @@ Q: Show me the top 5 products by price
 A: SELECT name, price FROM products ORDER BY price DESC LIMIT 5;
 
 Q: What are the orders placed in the last 7 days?
-A: SELECT * FROM orders WHERE order_date >= DATE('now', '-7 days');
+A: SELECT * FROM orders WHERE order_date >= NOW() - INTERVAL 7 DAY;
 
 Q: List customers who have never placed an order
 A: SELECT c.* FROM customers c LEFT JOIN orders o ON c.id = o.customer_id WHERE o.id IS NULL;
 """
 
 def build_system_prompt(schema: str) -> str:
-    return f"""You are an expert SQLite SQL assistant. Your ONLY job is to convert natural language questions into valid SQLite SELECT queries.
+    return f"""You are an expert MySQL SQL assistant. Your ONLY job is to convert natural language questions into valid MySQL SELECT queries.
+
 
 DATABASE SCHEMA:
 {schema}
@@ -211,14 +230,14 @@ DATABASE SCHEMA:
 
 STRICT RULES — follow every rule, no exceptions:
 1. Return ONLY the raw SQL query — no markdown, no backticks, no explanation, no preamble
-2. ONLY write SELECT statements — never INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, PRAGMA, TRUNCATE, REPLACE, ATTACH, DETACH, SAVEPOINT, RELEASE,or any write operation
+2. ONLY write SELECT statements — never INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, PRAGMA, TRUNCATE, REPLACE, ATTACH, DETACH, SAVEPOINT, RELEASE, or any write operation
 3. Use exact table and column names from the schema above
 4. Always end the query with a semicolon
 5. If the question is ambiguous, ask the user for more information
 6. If the question cannot be answered with the available schema, respond with exactly: CANNOT_ANSWER
 7. Never use subqueries that modify data
 8. Never use ATTACH, DETACH, or access sqlite_master directly
-9. THE final answer should be in proper english with correct meaning 
+9. The final answer should be in proper English with correct meaning
 10. IF the user asks what is in the database, what data is available, or what tables exist, DO NOT write SQL. Read the table names from the schema and respond EXACTLY in this format:
 META: The database contains company data. Available tables are: [insert table names]. Please ask detailed questions.
 11. IF the user asks a general question or greeting (like 'hi', 'who are you', etc) that does not need a database query, respond EXACTLY in this format:
@@ -252,7 +271,6 @@ def call_ollama(system_prompt: str, user_message: str) -> str:
 
 def clean_llm_sql_output(raw: str) -> str:
     """Strip any markdown or wrapper the LLM accidentally adds."""
-    # Fixed the regex to avoid using actual triple backticks so it doesn't break the formatting!
     cleaned = re.sub(r"`{3}(?:sql)?\s*([\s\S]*?)`{3}", r"\1", raw, flags=re.IGNORECASE)
     cleaned = cleaned.strip("` \n")
     return cleaned
@@ -263,14 +281,13 @@ def generate_natural_answer(question: str, sql: str, columns: list, rows: list) 
     """
     if not rows:
         return "No results found matching your query."
-    
-    # Format a clean representation of the rows
+
     data_summary = f"Columns: {', '.join(columns)}\nRows:\n"
     for row in rows[:100]:
         data_summary += f"- {row}\n"
     if len(rows) > 100:
         data_summary += f"... (and {len(rows) - 100} more rows)\n"
-        
+
     system_prompt = (
         "You are an expert SQLite assistant. Your job is to answer the user's question "
         "by formatting the database results into a clear, proper English response with correct meaning.\n"
@@ -280,16 +297,17 @@ def generate_natural_answer(question: str, sql: str, columns: list, rows: list) 
         "bullet points, or a markdown table so it looks highly readable in the chat bubble.\n"
         "3. Make sure to display the full list of names/records found in the database results. "
         "Do NOT truncate the list unless there are more than 100 rows.\n"
-        "4. Use single newlines for lists (do NOT leave blank lines or empty lines between items) to keep the text compact and professional."
+        "4. Use single newlines for lists (do NOT leave blank lines or empty lines between items) "
+        "to keep the text compact and professional."
     )
-    
+
     user_message = f"""User Question: {question}
 Executed SQL: {sql}
 Database Results:
 {data_summary}
 
 Please provide the direct English answer below:"""
-    
+
     try:
         answer = call_ollama(system_prompt, user_message)
         return answer
@@ -305,8 +323,11 @@ def rephrase_question(user_question: str, chat_history: list) -> str:
     """Uses LLM to rephrase a follow-up question based on conversation history."""
     if not chat_history:
         return user_question
-        
-    history_text = "\n".join([f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}" for msg in chat_history])
+
+    history_text = "\n".join([
+        f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+        for msg in chat_history
+    ])
     prompt = f"""You are a question rephraser.
 Given the following conversation history and a follow-up question, rephrase the follow-up question to be a complete, standalone question.
 If the follow-up question is already standalone and clear, return it exactly as is.
@@ -318,7 +339,7 @@ History:
 Follow-up Question: {user_question}
 
 Standalone Question:"""
-    
+
     try:
         response = call_ollama(prompt, "")
         return response.strip()
@@ -339,14 +360,43 @@ def classify_intent(user_question: str) -> str:
             return "SQL"
         return "GENERAL"
     except Exception:
-        return "SQL" # Default fallback
+        return "SQL"   # Default fallback
 
 def handle_general_chat(user_question: str) -> str:
     """General conversation handler without database access."""
-    chat_prompt = """You are a helpful Database Assistant. 
-    Keep your answer polite, short, and friendly (1-2 sentences max). 
+    chat_prompt = """You are a helpful Database Assistant.
+    Keep your answer polite, short, and friendly (1-2 sentences max).
     Remind them they can ask you to fetch data from the database."""
     return call_ollama(chat_prompt, user_question)
+
+# ─────────────────────────────────────────────
+# MCP TOOL STUBS (for Ollama tool-calling serialization)
+# FIX: Renamed with "tool_" prefix to avoid shadowing the real
+#      get_db_schema() function above. Ollama reads the docstrings
+#      to understand what each tool does; the prefix doesn't matter.
+# ─────────────────────────────────────────────
+
+def tool_list_tables() -> str:
+    """
+    List all tables in the SQLite database.
+    """
+    pass
+
+def tool_get_schema() -> str:
+    """
+    Retrieve the detailed database schema structure including column names, types, primary keys, and row counts.
+    """
+    pass
+
+def tool_query_db(sql_query: str) -> str:
+    """
+    Safely execute a read-only SELECT SQL query on the SQLite database.
+    Only SELECT statements are permitted. Banned actions like INSERT, UPDATE, DELETE, etc., will be blocked.
+
+    Args:
+        sql_query: The raw SQL string (SELECT query) to execute.
+    """
+    pass
 
 # ─────────────────────────────────────────────
 # ENDPOINTS
@@ -354,97 +404,232 @@ def handle_general_chat(user_question: str) -> str:
 
 @app.get("/status")
 async def status_endpoint():
-    """Health‑check endpoint."""
+    """Health-check endpoint."""
     return {"ok": True, "message": "service running"}
 
 @app.get("/schema")
-async def schema_endpoint(db_path: str):
-    """Return the SQLite schema for the requested database file."""
+async def schema_endpoint():
+    """Return the MySQL schema."""
     try:
-        return {"schema": get_schema(db_path)}
+        return {"schema": get_db_schema()}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/query")
 async def query_endpoint(request: QueryRequest):
-    """Process a natural‑language question, generate SQL via Ollama, execute it, and return results."""
+    """Process a natural-language question, generate SQL via Ollama, execute it, and return results."""
+
+    # Input length guard — prevents flooding the LLM prompt
+    if len(request.user_question) > 1000:
+        raise HTTPException(status_code=400, detail="Question too long. Please keep it under 1000 characters.")
+
     log.info(f"Received question: {request.user_question}")
-    
+
     # 0. REPHRASE QUESTION USING HISTORY
     actual_question = request.user_question
     if request.chat_history:
         actual_question = rephrase_question(request.user_question, request.chat_history)
         log.info(f"Rephrased question: {actual_question}")
-    
+
     # 1. INTENT ROUTING
     intent = classify_intent(actual_question)
     log.info(f"Intent Detected: {intent}")
-    
+
     # 2. GENERAL CHAT BRANCH
     if intent == "GENERAL":
         chat_response = handle_general_chat(actual_question)
         return {
-            "sql": None, 
-            "columns": [], 
+            "sql": None,
+            "columns": [],
             "rows": [],
-            "natural_answer": chat_response, 
-            "error": None, 
+            "natural_answer": chat_response,
+            "error": None,
             "attempts": 1
         }
 
-    # 3. SQL BRANCH
-    schema_str = get_schema(request.db_path)
-    system_prompt = build_system_prompt(schema_str)
+    # 3. SQL BRANCH (using MCP Client + Ollama Tool Calling)
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    import os
+    import sys
 
-    # Get raw SQL from LLM
-    raw_sql = call_ollama(system_prompt, actual_question)
-    
-    # Check for Privacy/Outline response (META tag)
-    if raw_sql.startswith("META:"):
-        safe_answer = raw_sql.replace("META:", "").strip()
-        return {
-            "sql": None, 
-            "columns": [], 
-            "rows": [],
-            "natural_answer": safe_answer, 
-            "error": None, 
-            "attempts": 1
-        }
-
-    sql = clean_llm_sql_output(raw_sql)
-
-    # Check if LLM determined it cannot answer
-    if "CANNOT_ANSWER" in sql.upper():
+    # Retrieve DB schema from database
+    try:
+        db_schema = get_db_schema()
+    except Exception as e:
         return {
             "sql": None,
             "columns": [],
             "rows": [],
-            "natural_answer": "I cannot answer this question based on the database schema provided.",
-            "error": "I cannot answer this question based on the database schema provided.",
-            "attempts": 1,
+            "natural_answer": None,
+            "error": f"Failed to retrieve database schema: {str(e)}",
+            "attempts": 0
         }
 
-    # Validate safety
-    safe, reason = validate_sql_safety(sql)
-    if not safe:
-        raise HTTPException(status_code=400, detail=f"SQL safety check failed: {reason}")
+    server_script = os.path.join(os.path.dirname(__file__), "mcp_server.py")
 
-    # Execute query
+    # Instruct Ollama to use the tool to query the database with schema context and examples
+    system_prompt = (
+        "You are a helpful MySQL database assistant.\n"
+        "Your job is to answer the user's question using the database.\n\n"
+        f"DATABASE SCHEMA:\n{db_schema}\n\n"
+        f"{FEW_SHOT_EXAMPLES}\n\n"
+        "Rules:\n"
+        "1. Only query tables, columns, and foreign key relationships defined in the DATABASE SCHEMA above. Do not guess or hallucinate table/column names or relationships.\n"
+        "2. Call 'tool_query_db' with a valid, read-only SELECT query to get the data you need. If 'tool_query_db' returns an error, analyze the MySQL error message, correct your query, and try calling 'tool_query_db' again. Do not hallucinate data if the query fails.\n"
+        "3. Format the final output into a clear, proper English response. If the query returned database records, you MUST print all of those records/results directly inside your response using a markdown table, numbered list, or bullet points. Do NOT say 'listed above' or 'listed below'; you must write the actual data yourself.\n"
+        "4. Do NOT include the generated SQL query or any SQL code in your final response. Only output the natural language response and database results.\n"
+        "5. Display all retrieved database records (up to 100 rows). Do not truncate the list unless it exceeds 100 records. Keep the response concise, friendly, and structured.\n"
+        "6. If the user asks you to modify, insert, delete, or update any data, do NOT try to run a delete or write query, and do NOT try to verify it. "
+        "Instead, directly explain to the user that you only have read-only access and cannot perform database modifications.\n"
+        "7. Keep the formatting compact. Do NOT add multiple empty/blank lines between paragraphs or list items. Use single newlines to keep the text compact and professional."
+    )
+
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=[server_script, DB_URL]
+    )
+
     try:
-        cols, rows = execute_sql(request.db_path, sql)
-        # cursor.description returns tuples like (name, type_code, ...); extract just the name
-        column_names = [c[0] for c in cols] if cols else []
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                # Initialize the MCP Session
+                await session.initialize()
+
+                # Retrieve tools from MCP Server to verify connection
+                await session.list_tools()
+
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                ]
+
+                # Add chat history context (limited to last 6 messages / 3 turns to avoid contamination)
+                recent_history = request.chat_history[-6:]
+                for msg in recent_history:
+                    role = msg.get("role")
+                    content = msg.get("content")
+                    if role == "bot":
+                        role = "assistant"
+                    messages.append({"role": role, "content": content})
+
+                # Add current user question
+                messages.append({"role": "user", "content": actual_question})
+
+                executed_sql = None
+
+                # Allow up to 5 steps of tool-calling iterations
+                for step in range(5):
+                    log.info(f"Agent Loop Step {step + 1}...")
+                    response = ollama.chat(
+                        model=OLLAMA_MODEL,
+                        messages=messages,
+                        tools=[tool_query_db],
+                        options={"temperature": 0.1}
+                    )
+
+                    # Inspect Ollama response
+                    if isinstance(response, dict):
+                        assistant_msg = response.get("message", {})
+                    else:
+                        assistant_msg = response.message
+
+                    # Check for requested tool calls
+                    tool_calls = (
+                        assistant_msg.get("tool_calls")
+                        if isinstance(assistant_msg, dict)
+                        else getattr(assistant_msg, "tool_calls", None)
+                    )
+
+                    if tool_calls:
+                        # Append Ollama's response (tool call requests) to messages history
+                        messages.append(assistant_msg)
+
+                        for tool_call in tool_calls:
+                            func = (
+                                tool_call.get("function")
+                                if isinstance(tool_call, dict)
+                                else getattr(tool_call, "function", None)
+                            )
+                            name = (
+                                func.get("name")
+                                if isinstance(func, dict)
+                                else getattr(func, "name", None)
+                            )
+                            args = (
+                                func.get("arguments")
+                                if isinstance(func, dict)
+                                else getattr(func, "arguments", None)
+                            )
+
+                            log.info(f"LLM requested tool call: {name} with args {args}")
+
+                            # FIX: strip "tool_" prefix to get the real MCP server tool name
+                            # e.g. "tool_query_db" → "query_db" (matches mcp_server.py)
+                            mcp_tool_name = name.replace("tool_", "") if name else name
+
+                            if name == "tool_query_db":
+                                executed_sql = args.get("sql_query") if args else None
+
+                            # Execute on MCP Server using the original tool name
+                            try:
+                                result = await session.call_tool(mcp_tool_name, args or {})
+                                tool_result_text = ""
+                                if result.content:
+                                    tool_result_text = result.content[0].text
+
+                                log.info(f"Tool '{mcp_tool_name}' returned: {tool_result_text[:200]}...")
+                            except Exception as e:
+                                tool_result_text = f"Error executing tool '{mcp_tool_name}': {str(e)}"
+                                log.error(tool_result_text)
+
+                            # Append tool results back to message history
+                            messages.append({
+                                "role": "tool",
+                                "name": name,
+                                "content": tool_result_text
+                            })
+                    else:
+                        # No more tool calls — Ollama has produced the final answer
+                        final_answer = (
+                            assistant_msg.get("content", "")
+                            if isinstance(assistant_msg, dict)
+                            else getattr(assistant_msg, "content", "")
+                        )
+
+                        # Collapse three or more consecutive newlines into a maximum of two
+                        final_answer = re.sub(r'\n{3,}', '\n\n', final_answer)
+
+
+                        return {
+                            "sql": executed_sql,
+                            "columns": [],
+                            "rows": [],
+                            "natural_answer": final_answer,
+                            "error": None,
+                            "attempts": step + 1
+                        }
+
+                # Agent loop exhausted without a final answer
+                return {
+                    "sql": executed_sql,
+                    "columns": [],
+                    "rows": [],
+                    "natural_answer": (
+                        "I reached the maximum reasoning steps without producing a final answer. "
+                        "Please try rephrasing your question."
+                    ),
+                    "error": "Reasoning loop limit exceeded",
+                    "attempts": 5
+                }
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"SQL execution error: {e}")
-
-    # Generate natural language response using query results
-    natural_answer = generate_natural_answer(request.user_question, sql, column_names, rows)
-
-    return {
-        "sql": sql,
-        "columns": column_names,
-        "rows": rows,
-        "natural_answer": natural_answer,
-        "error": None,
-        "attempts": 1,
-    }
+        log.error(f"MCP Session failed: {e}")
+        return {
+            "sql": None,
+            "columns": [],
+            "rows": [],
+            "natural_answer": None,
+            "error": f"Failed to connect to SQLite MCP Server: {str(e)}",
+            "attempts": 0
+        }

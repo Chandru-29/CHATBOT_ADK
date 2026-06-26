@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+
+# Database files
+*.db
+*.sqlite
+
+# Streamlit local credentials/history
+.streamlit/secrets.toml
