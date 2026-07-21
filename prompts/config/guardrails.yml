@@ -1,0 +1,102 @@
+# StitchGuard — Unified Guardrails Configuration
+
+# ── Layer 1: Input Prompt Validation
+input_safety:
+  max_characters: 1000
+  
+  # Regex patterns to detect prompt injection/jailbreak attempts
+  jailbreak_patterns:
+    - "(?i)ignore\\s+all\\s+previous\\s+instructions"
+    - "(?i)you\\s+are\\s+now\\s+in\\s+developer\\s+mode"
+    - "(?i)bypass\\s+rules"
+    - "(?i)dan\\s+mode"
+    - "(?i)system\\s+override"
+    - "(?i)translate\\s+the\\s+instructions"
+    
+  # Regex patterns to identify and redact PII from user inputs
+  pii_patterns:
+    ssn: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+    email: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+    phone: "(?:\\+?[0-9]{1,3}[-.\\s]*)?[0-9]{3,4}[-.\\s]+[0-9]{4}\\b"
+    credit_card: "\\b(?:\\d[ -]*?){13,16}\\b"
+
+# ── Layer 3: Agent Table Domain Scoping
+# Restricts SQL generation compile-time access to specific tables
+agent_domain_scopes:
+  HR_AGENT:
+    allowed_tables:
+      - "employees"
+      - "departments"
+      - "projects"
+      - "attendance"
+  SALES_AGENT:
+    allowed_tables:
+      - "customers"
+      - "orders"
+      - "products"
+
+# ── Layer 4: SQL Execution Security
+database_safety:
+  # Any query must begin with one of these prefix verbs (ignoring whitespace)
+  allowed_prefixes:
+    - "SELECT"
+    - "WITH"
+    - "SHOW"
+    - "DESC"
+    - "DESCRIBE"
+    - "EXPLAIN"
+
+  # Forbidden write/DML/DDL keywords
+  banned_keywords:
+    - "INSERT"
+    - "UPDATE"
+    - "DELETE"
+    - "DROP"
+    - "CREATE"
+    - "ALTER"
+    - "TRUNCATE"
+    - "REPLACE"
+    - "ATTACH"
+    - "DETACH"
+    - "PRAGMA"
+    - "BEGIN"
+    - "COMMIT"
+    - "ROLLBACK"
+    - "VACUUM"
+    - "REINDEX"
+    - "GRANT"
+    - "REVOKE"
+    - "SAVEPOINT"
+    - "RELEASE"
+
+  # System/Catalog schemas that must never be accessed
+  banned_schemas:
+    - "information_schema"
+    - "performance_schema"
+    - "mysql"
+    - "sys"
+
+# ── Layer 5: Output Sanitization
+output_safety:
+  # Columns to completely filter out of DB query results before passing to output/formatting
+  redact_columns:
+    - "password"
+    - "password_hash"
+    - "passwd"
+    - "ssn"
+    - "secret_key"
+    - "api_key"
+    - "id"
+    - "credit_card"
+    - "salt"
+    - "emp_id"
+    - "customer_id"
+    - "project_id"
+    - "order_id"
+    - "product_id"
+    - "phone_number"
+    - "phonenumber"
+    - "email"
+    - "email_id"
+    - "email_address"
+

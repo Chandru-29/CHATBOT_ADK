@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────
+# SQL EXAMPLES — grouped by domain intent
+# ─────────────────────────────────────────────
+
+HR_AGENT:
+  - q: "Who is the head of the IT department?"
+    a: "SELECT head_of_dept FROM departments WHERE dept_name = 'IT';"
+  - q: "Show me the top 3 highest paid employees"
+    a: "SELECT name, salary, designation FROM employees ORDER BY salary DESC LIMIT 3;"
+  - q: "List all projects assigned to employee ID 5"
+    a: "SELECT * FROM projects WHERE emp_id = 5;"
+  - q: "Which employees are in the Sales department?"
+    a: |
+      SELECT e.name, e.designation FROM employees e
+      JOIN departments d ON e.dept_id = d.dept_id
+      WHERE d.dept_name = 'Sales';
+  - q: "How many employees are there in total?"
+    a: "SELECT COUNT(*) AS total_employees FROM employees;"
+  - q: "List all departments and their heads"
+    a: "SELECT dept_name, head_of_dept FROM departments;"
+
+# ─────────────────────────────────────────────
+
+SALES_AGENT:
+  - q: "How many orders were placed by customer 1?"
+    a: "SELECT COUNT(*) AS total_orders FROM orders WHERE customer_id = 1;"
+  - q: "Show me the top 5 customers by registration date"
+    a: "SELECT customer_name, registration_date FROM customers ORDER BY registration_date DESC LIMIT 5;"
+  - q: "List all orders with status 'Pending' and total amount > 500"
+    a: "SELECT * FROM orders WHERE status = 'Pending' AND total_amount > 500;"
+  - q: "What is the total sales amount from all completed orders?"
+    a: "SELECT SUM(total_amount) AS total_sales FROM orders WHERE status = 'Completed';"
+  - q: "Which customers have placed more than 3 orders?"
+    a: |
+      SELECT c.customer_name, COUNT(o.order_id) AS order_count
+      FROM customers c JOIN orders o ON c.customer_id = o.customer_id
+      GROUP BY c.customer_id HAVING order_count > 3;
+  - q: "Show me all orders placed in 2026"
+    a: "SELECT * FROM orders WHERE YEAR(order_date) = 2026;"
+
+# ─────────────────────────────────────────────
+
+CROSS_DOMAIN:
+  - q: "Show me all tables in the database"
+    a: "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();"
+  - q: "How many defect count in desk lamp?"
+    a: |
+      SELECT p.product_name, s.defected_products 
+      FROM suppliers s JOIN products p ON s.product_id = p.product_id
+      WHERE LOWER(p.product_name) = 'desk lamp';
+  - q: "Find customers registered in 2026 and employees in HR department"
+    a: |
+      SELECT 'Customer' AS type, customer_name AS name FROM customers
+      WHERE registration_date >= '2026-01-01'
+      UNION ALL
+      SELECT 'Employee' AS type, name FROM employees
+      WHERE dept_id = (SELECT dept_id FROM departments WHERE dept_name = 'HR');
+  - q: "How many records are in each table?"
+    a: |
+      SELECT 'employees' AS table_name, COUNT(*) AS record_count FROM employees
+      UNION ALL SELECT 'departments', COUNT(*) FROM departments
+      UNION ALL SELECT 'projects', COUNT(*) FROM projects
+      UNION ALL SELECT 'customers', COUNT(*) FROM customers
+      UNION ALL SELECT 'orders', COUNT(*) FROM orders;

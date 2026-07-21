@@ -15,3 +15,6 @@ ENV/
 
 # Streamlit local credentials/history
 .streamlit/secrets.toml
+
+# Logs
+logs/
