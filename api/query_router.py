@@ -68,6 +68,7 @@ from utils.guardrails import (
     is_safe_prompt,
     redact_pii_from_input,
     redact_db_output_string,
+    has_write_intent,
 )
 
 log = get_logger(__name__)
@@ -291,6 +292,22 @@ async def handle_query(req: ChatRequest, stream: bool = False):
     # ── L1: Redact personal data from prompt ──
     req.user_question = redact_pii_from_input(req.user_question)
 
+    # ── L1: Check for write intent in prompt ──
+    has_write, write_reason = has_write_intent(req.user_question)
+    if has_write:
+        if stream:
+            async def _stream_refusal():
+                yield write_reason
+            return StreamingResponse(_stream_refusal(), media_type="text/event-stream")
+        return {
+            "sql":            None,
+            "columns":        [],
+            "rows":           [],
+            "natural_answer": write_reason,
+            "error":          None,
+            "attempts":       1,
+            "agent_name":     "System Guard",
+        }
 
     log.info(f"━━━ NEW REQUEST: '{req.user_question[:80]}' ━━━")
 

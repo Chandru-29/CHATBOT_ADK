@@ -282,4 +282,36 @@ def redact_db_output_string(db_output: str) -> str:
         
     return result_str
 
+
+# ── STITCHGUARD FUNCTION: Layer 1 Write Intent Checker ──
+def has_write_intent(user_question: str) -> tuple[bool, Optional[str]]:
+    """
+    Scan the user question for modification, write, or structural DDL/DML intents.
+    Returns (True, refusal_message) if write intent is detected, else (False, None).
+    """
+    q_lower = user_question.lower()
+
+    # Regex patterns for write-intent actions in natural language
+    write_patterns = [
+        r"\badd\s+(?:the\s+|a\s+|an\s+)?(?:new\s+)?(?:employee|customer|department|project|order|product|supplier|row|record|user|admin|data|table|column)\b",
+        r"\binsert\b",
+        r"\bupdate\b",
+        r"\bdelete\b",
+        r"\bremove\b",
+        r"\bchange\b",
+        r"\bmodify\b",
+        r"\bcreate\s+table\b",
+        r"\bdrop\s+table\b",
+        r"\btruncate\s+table\b",
+        r"\balter\s+table\b",
+    ]
+
+    for pattern in write_patterns:
+        if re.search(pattern, q_lower):
+            log.warning(f"Guardrails: Write intent detected in user question: {pattern!r}")
+            return True, "I cannot modify the database. I only have read-only access."
+
+    return False, None
+
+
  
