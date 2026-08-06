@@ -1,64 +1,483 @@
 # ─────────────────────────────────────────────
-# SQL EXAMPLES — grouped by domain intent
+# SQL EXAMPLES — Warehouse Management System (WMS)
 # ─────────────────────────────────────────────
 
-HR_AGENT:
-  - q: "Who is the head of the IT department?"
-    a: "SELECT head_of_dept FROM departments WHERE dept_name = 'IT';"
-  - q: "Show me the top 3 highest paid employees"
-    a: "SELECT name, salary, designation FROM employees ORDER BY salary DESC LIMIT 3;"
-  - q: "List all projects assigned to employee ID 5"
-    a: "SELECT * FROM projects WHERE emp_id = 5;"
-  - q: "Which employees are in the Sales department?"
+WMS_AGENT:
+  # ── Picklist queries ──────────────────────────────────────────────────────────
+  - q: "Show open picklists"
     a: |
-      SELECT e.name, e.designation FROM employees e
-      JOIN departments d ON e.dept_id = d.dept_id
-      WHERE d.dept_name = 'Sales';
-  - q: "How many employees are there in total?"
-    a: "SELECT COUNT(*) AS total_employees FROM employees;"
-  - q: "List all departments and their heads"
-    a: "SELECT dept_name, head_of_dept FROM departments;"
+      SELECT TOP 20 picklistCode, status
+      FROM PICKLIST
+      WHERE status IN (1,2,3,4)
+      AND isDeleted = 0
+
+  - q: "Show all completed picklists"
+    a: |
+      SELECT TOP 20 picklistCode, ud AS completionDate
+      FROM PICKLIST
+      WHERE status = 5
+      AND isDeleted = 0
+      ORDER BY ud DESC
+
+  - q: "Who is assigned to picklist PL001?"
+    a: |
+      SELECT p.picklistCode, u.name, u.userName
+      FROM PICKLIST p
+      JOIN [user] u ON p.assignedUser = u.userId
+      WHERE LOWER(p.picklistCode) = LOWER('PL001')
+      AND p.isDeleted = 0
+      AND u.isDeleted = 0
+
+  - q: "Show picklists assigned to Admin and User02"
+    a: |
+      SELECT DISTINCT TOP 20 p.picklistCode, u.name
+      FROM PICKLIST p
+      JOIN [user] u ON p.assignedUser = u.userId
+      WHERE u.name IN ('Admin', 'User02')
+      AND p.isDeleted = 0
+      AND u.isDeleted = 0
+
+  - q: "What is the putaway location for picklist PL001?"
+    a: |
+      SELECT DISTINCT p.picklistCode, l.locationCode
+      FROM PICKLIST p
+      JOIN PICKLISTVIEW pv ON p.picklistId = pv.picklistId
+      JOIN SULOCATION s ON pv.suidId = s.suidId
+      JOIN LOCATION l ON s.locationId = l.locationId
+      WHERE LOWER(p.picklistCode) = LOWER('PL001')
+      AND p.isDeleted = 0
+      AND pv.isDeleted = 0
+      AND s.isDeleted = 0
+      AND l.isDeleted = 0
+
+  - q: "List items in picklist PL002"
+    a: |
+      SELECT i.itemCode, i.itemDescription, pi.qty, pi.pickedQty, pi.status
+      FROM PICKLIST p
+      JOIN PICKLISTITEM pi ON p.picklistId = pi.picklistId
+      JOIN ITEM i ON pi.itemId = i.itemId
+      WHERE LOWER(p.picklistCode) = LOWER('PL002')
+      AND p.isDeleted = 0
+      AND pi.isDeleted = 0
+      AND i.isDeleted = 0
+
+  - q: "List all picklist items"
+    a: |
+      SELECT TOP 20 p.picklistCode, i.itemCode, i.itemDescription, pi.qty, pi.pickedQty, pi.status
+      FROM PICKLIST p
+      JOIN PICKLISTITEM pi ON p.picklistId = pi.picklistId
+      JOIN ITEM i ON pi.itemId = i.itemId
+      WHERE p.isDeleted = 0
+      AND pi.isDeleted = 0
+      AND i.isDeleted = 0
+
+  - q: "How many open picklists are there?"
+    a: |
+      SELECT COUNT(*) AS openPicklists
+      FROM PICKLIST
+      WHERE status IN (1,2,3,4)
+      AND isDeleted = 0
+
+  # ── Inventory / Stock queries ─────────────────────────────────────────────────
+  - q: "Show items with stock"
+    a: |
+      SELECT i.itemCode, i.itemDescription, SUM(s.qty) AS totalStock
+      FROM ITEM i
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY i.itemCode, i.itemDescription
+      HAVING SUM(s.qty) > 0
+
+  - q: "Inventory by location"
+    a: |
+      SELECT l.locationCode, i.itemCode, SUM(s.qty) AS qty
+      FROM SULOCATION s
+      JOIN LOCATION l ON s.locationId = l.locationId
+      JOIN SKUITEM sk ON s.skuId = sk.skuId
+      JOIN ITEM i ON sk.itemId = i.itemId
+      WHERE s.isDeleted = 0
+      AND l.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND i.isDeleted = 0
+      GROUP BY l.locationCode, i.itemCode
+
+  - q: "What is the stock of item ITEM001?"
+    a: |
+      SELECT i.itemCode, SUM(s.qty) AS totalStock
+      FROM ITEM i
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE LOWER(i.itemCode) = LOWER('ITEM001')
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY i.itemCode
+
+  # ── GRN queries ───────────────────────────────────────────────────────────────
+  - q: "Show latest GRN entries"
+    a: |
+      SELECT TOP 20 grnNumber, grnLineNumber, itemCode, qty, grnDate
+      FROM GRN
+      WHERE isDeleted = 0
+      ORDER BY cd DESC
+
+  - q: "GRN details for item ITEM001"
+    a: |
+      SELECT g.grnNumber, g.grnLineNumber, g.qty, g.grnDate
+      FROM GRN g
+      JOIN ITEM i ON g.itemCode = i.itemCode
+      WHERE LOWER(i.itemCode) = LOWER('ITEM001')
+      AND g.isDeleted = 0
+      AND i.isDeleted = 0
+
+  # ── Item master queries ───────────────────────────────────────────────────────
+  - q: "How many items are there in total?"
+    a: |
+      SELECT COUNT(*) AS totalItems
+      FROM ITEM
+      WHERE isDeleted = 0
+
+  - q: "List all items"
+    a: |
+      SELECT itemCode, itemDescription, itemGroup, uom, status
+      FROM ITEM
+      WHERE isDeleted = 0
+
+  - q: "Show details for item ITEM005"
+    a: |
+      SELECT itemCode, itemDescription, itemGroup, uom, status
+      FROM ITEM
+      WHERE LOWER(itemCode) = LOWER('ITEM005')
+      AND isDeleted = 0
+
+  # ── Warehouse queries ─────────────────────────────────────────────────────────
+  - q: "List all warehouses"
+    a: |
+      SELECT warehouseCode, warehouseName
+      FROM WAREHOUSE
+      WHERE isDeleted = 0
+
+  - q: "Show items in warehouse W001"
+    a: |
+      SELECT i.itemCode, i.itemDescription
+      FROM WAREHOUSE w
+      JOIN ITEMLOCACNMAP m ON w.warehouseId = m.warehouseId
+      JOIN ITEM i ON m.itemId = i.itemId
+      WHERE LOWER(w.warehouseCode) = LOWER('W001')
+      AND w.isDeleted = 0
+      AND m.isDeleted = 0
+      AND i.isDeleted = 0
+
+  # ── FG Transaction queries ────────────────────────────────────────────────────
+  - q: "Show FG transactions not yet delivered"
+    a: |
+      SELECT TOP 20 fgCode, vin, sNo, putawayTime, isPutaway, isDelivered
+      FROM FGTRANSACTION
+      WHERE isDelivered = 0
+      AND isDeleted = 0
+      ORDER BY cd DESC
+
+  - q: "Show FG transactions that are put away"
+    a: |
+      SELECT TOP 20 fgCode, vin, sNo, putawayTime
+      FROM FGTRANSACTION
+      WHERE isPutaway = 1
+      AND isDeleted = 0
+      ORDER BY cd DESC
+
+  - q: "Show VIN numbers on hold"
+    a: |
+      SELECT fgCode, vin, sNo
+      FROM FGTRANSACTION
+      WHERE isVinHold = 1
+      AND isDeleted = 0
+
+  - q: "Show FG transaction location details"
+    a: |
+      SELECT TOP 20 ft.fgCode, ft.vin, l.locationCode, ft.isPutaway, ft.isDelivered
+      FROM FGTRANSACTION ft
+      JOIN LOCATION l ON ft.locationId = l.locationId
+      WHERE ft.isDeleted = 0
+      AND l.isDeleted = 0
+      ORDER BY ft.cd DESC
+
+  # ── Picklist Status Filter queries ─────────────────────────────────────────
+  - q: "Show all picklists in picking started status"
+    a: |
+      SELECT TOP 20 picklistCode, status
+      FROM PICKLIST
+      WHERE status = 2
+      AND isDeleted = 0
+
+  - q: "Show picklists that are in putaway started status"
+    a: |
+      SELECT TOP 20 picklistCode, status
+      FROM PICKLIST
+      WHERE status = 4
+      AND isDeleted = 0
+
+  - q: "Show created picklists"
+    a: |
+      SELECT TOP 20 picklistCode, status
+      FROM PICKLIST
+      WHERE status = 0
+      AND isDeleted = 0
+
+  - q: "How many picklists are completed?"
+    a: |
+      SELECT COUNT(*) AS completedPicklists
+      FROM PICKLIST
+      WHERE status = 5
+      AND isDeleted = 0
+
+  # ── Document Type Mapping queries ──────────────────────────────────────────
+  - q: "Show all GRN picklists"
+    a: |
+      SELECT TOP 20 picklistCode, status, documentNumber
+      FROM PICKLIST
+      WHERE documentTypeId = 1
+      AND isDeleted = 0
+
+  - q: "Show work order picklists"
+    a: |
+      SELECT TOP 20 picklistCode, status, documentNumber
+      FROM PICKLIST
+      WHERE documentTypeId = 21
+      AND isDeleted = 0
+
+  - q: "Show transfer order picklists"
+    a: |
+      SELECT TOP 20 picklistCode, status, documentNumber
+      FROM PICKLIST
+      WHERE documentTypeId = 16
+      AND isDeleted = 0
+
+  # ── Completion Date queries ────────────────────────────────────────────────
+  - q: "When was picklist PL001 completed?"
+    a: |
+      SELECT picklistCode, ud AS completionDate
+      FROM PICKLIST
+      WHERE LOWER(picklistCode) = LOWER('PL001')
+      AND status = 5
+      AND isDeleted = 0
+
+  - q: "Show picklists completed today"
+    a: |
+      SELECT picklistCode, ud AS completionDate
+      FROM PICKLIST
+      WHERE status = 5
+      AND CAST(ud AS DATE) = CAST(GETDATE() AS DATE)
+      AND isDeleted = 0
+      ORDER BY ud DESC
+
+  # ── Warehouse Join Chain queries ───────────────────────────────────────────
+  - q: "Show items and their locations in warehouse W001"
+    a: |
+      SELECT i.itemCode, i.itemDescription, l.locationCode
+      FROM WAREHOUSE w
+      JOIN ITEMLOCACNMAP m ON w.warehouseId = m.warehouseId
+      JOIN ITEM i ON m.itemId = i.itemId
+      JOIN LOCATION l ON m.locationId = l.locationId
+      WHERE LOWER(w.warehouseCode) = LOWER('W001')
+      AND w.isDeleted = 0
+      AND m.isDeleted = 0
+      AND i.isDeleted = 0
+      AND l.isDeleted = 0
+
+  - q: "Show stock for items in warehouse W001"
+    a: |
+      SELECT i.itemCode, i.itemDescription, SUM(s.qty) AS totalStock
+      FROM WAREHOUSE w
+      JOIN ITEMLOCACNMAP m ON w.warehouseId = m.warehouseId
+      JOIN ITEM i ON m.itemId = i.itemId
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE LOWER(w.warehouseCode) = LOWER('W001')
+      AND w.isDeleted = 0
+      AND m.isDeleted = 0
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY i.itemCode, i.itemDescription
+      HAVING SUM(s.qty) > 0
+
+  - q: "What locations are in warehouse W001?"
+    a: |
+      SELECT DISTINCT l.locationCode, l.locationName
+      FROM WAREHOUSE w
+      JOIN ITEMLOCACNMAP m ON w.warehouseId = m.warehouseId
+      JOIN LOCATION l ON m.locationId = l.locationId
+      WHERE LOWER(w.warehouseCode) = LOWER('W001')
+      AND w.isDeleted = 0
+      AND m.isDeleted = 0
+      AND l.isDeleted = 0
+
+  - q: "Show FG transactions for warehouse W001"
+    a: |
+      SELECT ft.fgCode, ft.vin, ft.isPutaway, ft.isDelivered
+      FROM WAREHOUSE w
+      JOIN ITEMLOCACNMAP m ON w.warehouseId = m.warehouseId
+      JOIN ITEM i ON m.itemId = i.itemId
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      JOIN FGTRANSACTION ft ON s.suidId = ft.suidId
+      WHERE LOWER(w.warehouseCode) = LOWER('W001')
+      AND w.isDeleted = 0
+      AND m.isDeleted = 0
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      AND ft.isDeleted = 0
+
+  # ── GRN → Stock Chain queries ──────────────────────────────────────────────
+  - q: "Show stock for items received in GRN GRN001"
+    a: |
+      SELECT i.itemCode, SUM(s.qty) AS totalStock
+      FROM GRN g
+      JOIN ITEM i ON g.itemCode = i.itemCode
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE LOWER(g.grnNumber) = LOWER('GRN001')
+      AND g.isDeleted = 0
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY i.itemCode
+
+  - q: "Where are items from GRN GRN001 stored?"
+    a: |
+      SELECT i.itemCode, l.locationCode, s.qty
+      FROM GRN g
+      JOIN ITEM i ON g.itemCode = i.itemCode
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      JOIN LOCATION l ON s.locationId = l.locationId
+      WHERE LOWER(g.grnNumber) = LOWER('GRN001')
+      AND g.isDeleted = 0
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      AND l.isDeleted = 0
+
+  - q: "Show latest GRN with stock details"
+    a: |
+      SELECT TOP 10 g.grnNumber, g.itemCode, g.qty AS grnQty, SUM(s.qty) AS currentStock
+      FROM GRN g
+      JOIN ITEM i ON g.itemCode = i.itemCode
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE g.isDeleted = 0
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY g.grnNumber, g.itemCode, g.qty
+      ORDER BY g.cd DESC
+
+  # ── SUIDACTIVITYLOG queries ────────────────────────────────────────────────
+  - q: "Show activity log for SUID 123"
+    a: |
+      SELECT sal.suidActivityLogId, sal.suidId, sal.picklistId, sal.status, sal.remark
+      FROM SUIDACTIVITYLOG sal
+      WHERE sal.suidId = 123
+      AND sal.isDeleted = 0
+
+  - q: "Show all activity logs for picklist PL001"
+    a: |
+      SELECT sal.suidActivityLogId, sal.suidId, sal.status, sal.remark
+      FROM SUIDACTIVITYLOG sal
+      JOIN PICKLIST p ON sal.picklistId = p.picklistId
+      WHERE LOWER(p.picklistCode) = LOWER('PL001')
+      AND sal.isDeleted = 0
+      AND p.isDeleted = 0
+
+  # ── FGMODEL queries ───────────────────────────────────────────────────────
+  - q: "List all FG models"
+    a: |
+      SELECT fgModelCode
+      FROM FGMODEL
+      WHERE isDeleted = 0
+
+  - q: "Show FG model for item ITEM001"
+    a: |
+      SELECT fm.fgModelCode, i.itemCode, i.itemDescription
+      FROM FGMODEL fm
+      JOIN ITEM i ON fm.itemId = i.itemId
+      WHERE LOWER(i.itemCode) = LOWER('ITEM001')
+      AND fm.isDeleted = 0
+      AND i.isDeleted = 0
+
+  # ── ITEMLOCACNMAP queries ──────────────────────────────────────────────────
+  - q: "Show item-location mappings"
+    a: |
+      SELECT TOP 20 i.itemCode, l.locationCode
+      FROM ITEMLOCACNMAP m
+      JOIN ITEM i ON m.itemId = i.itemId
+      JOIN LOCATION l ON m.locationId = l.locationId
+      WHERE m.isDeleted = 0
+      AND i.isDeleted = 0
+      AND l.isDeleted = 0
+
+  - q: "Which items are mapped to location LOC001?"
+    a: |
+      SELECT i.itemCode, i.itemDescription
+      FROM ITEMLOCACNMAP m
+      JOIN ITEM i ON m.itemId = i.itemId
+      JOIN LOCATION l ON m.locationId = l.locationId
+      WHERE LOWER(l.locationCode) = LOWER('LOC001')
+      AND m.isDeleted = 0
+      AND i.isDeleted = 0
+      AND l.isDeleted = 0
+
+  # ── Vendor queries ─────────────────────────────────────────────────────────
+  - q: "Show GRN entries from vendor V001"
+    a: |
+      SELECT grnNumber, grnLineNumber, itemCode, qty, grnDate
+      FROM GRN
+      WHERE LOWER(vendorCode) = LOWER('V001')
+      AND isDeleted = 0
+
+  - q: "What items were received from vendor V001?"
+    a: |
+      SELECT DISTINCT i.itemCode, i.itemDescription
+      FROM GRN g
+      JOIN ITEM i ON g.itemCode = i.itemCode
+      WHERE LOWER(g.vendorCode) = LOWER('V001')
+      AND g.isDeleted = 0
+      AND i.isDeleted = 0
+
+  # ── User queries ───────────────────────────────────────────────────────────
+  - q: "List all users"
+    a: |
+      SELECT name, userName
+      FROM [user]
+      WHERE isDeleted = 0
+
+  # ── Multi-value IN clause queries ──────────────────────────────────────────
+  - q: "Show stock for items ITEM001, ITEM002, and ITEM003"
+    a: |
+      SELECT i.itemCode, SUM(s.qty) AS totalStock
+      FROM ITEM i
+      JOIN SKUITEM sk ON i.itemId = sk.itemId
+      JOIN SULOCATION s ON sk.skuId = s.skuId
+      WHERE LOWER(i.itemCode) IN (LOWER('ITEM001'), LOWER('ITEM002'), LOWER('ITEM003'))
+      AND i.isDeleted = 0
+      AND sk.isDeleted = 0
+      AND s.isDeleted = 0
+      GROUP BY i.itemCode
 
 # ─────────────────────────────────────────────
 
-SALES_AGENT:
-  - q: "How many orders were placed by customer 1?"
-    a: "SELECT COUNT(*) AS total_orders FROM orders WHERE customer_id = 1;"
-  - q: "Show me the top 5 customers by registration date"
-    a: "SELECT customer_name, registration_date FROM customers ORDER BY registration_date DESC LIMIT 5;"
-  - q: "List all orders with status 'Pending' and total amount > 500"
-    a: "SELECT * FROM orders WHERE status = 'Pending' AND total_amount > 500;"
-  - q: "What is the total sales amount from all completed orders?"
-    a: "SELECT SUM(total_amount) AS total_sales FROM orders WHERE status = 'Completed';"
-  - q: "Which customers have placed more than 3 orders?"
-    a: |
-      SELECT c.customer_name, COUNT(o.order_id) AS order_count
-      FROM customers c JOIN orders o ON c.customer_id = o.customer_id
-      GROUP BY c.customer_id HAVING order_count > 3;
-  - q: "Show me all orders placed in 2026"
-    a: "SELECT * FROM orders WHERE YEAR(order_date) = 2026;"
-
-# ─────────────────────────────────────────────
-
-CROSS_DOMAIN:
-  - q: "Show me all tables in the database"
-    a: "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();"
-  - q: "How many defect count in desk lamp?"
-    a: |
-      SELECT p.product_name, s.defected_products 
-      FROM suppliers s JOIN products p ON s.product_id = p.product_id
-      WHERE LOWER(p.product_name) = 'desk lamp';
-  - q: "Find customers registered in 2026 and employees in HR department"
-    a: |
-      SELECT 'Customer' AS type, customer_name AS name FROM customers
-      WHERE registration_date >= '2026-01-01'
-      UNION ALL
-      SELECT 'Employee' AS type, name FROM employees
-      WHERE dept_id = (SELECT dept_id FROM departments WHERE dept_name = 'HR');
-  - q: "How many records are in each table?"
-    a: |
-      SELECT 'employees' AS table_name, COUNT(*) AS record_count FROM employees
-      UNION ALL SELECT 'departments', COUNT(*) FROM departments
-      UNION ALL SELECT 'projects', COUNT(*) FROM projects
-      UNION ALL SELECT 'customers', COUNT(*) FROM customers
-      UNION ALL SELECT 'orders', COUNT(*) FROM orders;
+GENERAL:
+  - q: "Hello, good morning!"
+    a: "Hello! How can I assist you with the Warehouse Management System today?"
+  - q: "What is your name and what can you do?"
+    a: "I am a WMS AI assistant. I can help you query picklists, inventory, GRN, items, locations, and warehouse data."
+  - q: "How does this chatbot system work?"
+    a: "I convert natural language questions into SQL queries to retrieve information from the WMS database."
+  - q: "What can this system do?"
+    a: "I can answer questions about picklists, stock, inventory, GRN receipts, item master data, warehouse locations, FG transactions, and more."
+  - q: "Who created this application?"
+    a: "This application was built as a specialized WMS SQL Chatbot with MCP connection."

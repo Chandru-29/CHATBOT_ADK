@@ -15,19 +15,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BACKEND_URL  = "http://localhost:8000"
+BACKEND_URL  = os.getenv("BACKEND_URL", "http://localhost:8000")
 OLLAMA_MODEL = os.getenv("MODEL_NAME", "qwen2.5-coder:7b")
+ROUTER_MODEL = os.getenv("ROUTER_MODEL_NAME", OLLAMA_MODEL)
 
 DB_DIALECT = os.getenv("DB_DIALECT", "mysql")
 DB_HOST    = os.getenv("DB_HOST",    "localhost")
-DB_NAME    = os.getenv("DB_NAME",    "company_data")
+DB_NAME    = os.getenv("DB_NAME",    "WMS_DB")
 
 
 # ── BACKEND API INTEGRATIONS ────────────────────────────────────────────────────
 
 def _fetch_schema() -> str:
     """Fetch the DB schema from the backend API. Raises RuntimeError on failure."""
-    response = requests.get(f"{BACKEND_URL}/schema")
+    try:
+        response = requests.get(f"{BACKEND_URL}/schema", timeout=10)
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Backend not responding — schema request timed out.")
     if response.status_code == 200:
         return response.json()["schema"]
     raise RuntimeError(response.json().get("detail", "Failed to retrieve schema"))
@@ -36,11 +40,13 @@ def _fetch_schema() -> str:
 def _check_backend_health() -> tuple[bool, str]:
     """Ping the backend API. Returns (is_ok, message)."""
     try:
-        response = requests.get(f"{BACKEND_URL}/status")
+        response = requests.get(f"{BACKEND_URL}/status", timeout=10)
         if response.status_code == 200:
             data = response.json()
             return data["ok"], data["message"]
         return False, f"Backend returned status code {response.status_code}"
+    except requests.exceptions.Timeout:
+        return False, "Backend not responding — health check timed out."
     except Exception as e:
         return False, f"Cannot connect to backend: {e}"
 

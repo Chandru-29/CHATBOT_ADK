@@ -80,18 +80,35 @@ header[data-testid="stHeader"], [data-testid="stHeader"] {
     flex-grow: 0 !important;
 }
 
-/* Sidebar styling - minimalist neutral */
-[data-testid="stSidebar"] {
-    border-right: 1px solid #e4e4e7 !important;
-    background-color: #f3f3f5 !important;
+/* Remove Streamlit sidebar overlay background dimming and blur */
+[data-testid="stSidebarOverlay"], div[data-testid="stSidebarOverlay"] {
+    background-color: transparent !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }
 
-/* Sidebar elements text and headings override */
+/* Floating Light Glassmorphism Sidebar Container */
+[data-testid="stSidebar"] {
+    background: rgba(255, 255, 255, 0.88) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border-right: 1px solid rgba(228, 228, 231, 0.8) !important;
+    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.08) !important;
+    z-index: 999999 !important;
+}
+
+/* Sidebar elements text and headings contrast for light glassmorphism */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] h4,
 [data-testid="stSidebar"] h5,
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] span,
-[data-testid="stSidebar"] label {
+[data-testid="stSidebar"] div,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stCaption {
     color: #18181b !important;
 }
 
@@ -102,6 +119,8 @@ header[data-testid="stHeader"], [data-testid="stHeader"] {
     border: 1px solid #d4d4d8 !important;
     border-radius: 6px !important;
 }
+
+
 
 /* Custom width for content column */
 .block-container {

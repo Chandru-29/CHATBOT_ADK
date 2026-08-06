@@ -2,19 +2,51 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
-# Environments
+# Caches & Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Environments & Secret Files
 .env
-.venv
+.env.*
+!.env.example
+!.env.template
+.venv/
 venv/
 ENV/
+env/
 
-# Database files
+# Streamlit local credentials & secrets
+.streamlit/secrets.toml
+
+# Databases & Vector DB Data
 *.db
 *.sqlite
-
-# Streamlit local credentials/history
-.streamlit/secrets.toml
+*.sqlite3
+chroma_data/
+chromadb/
 
 # Logs
 logs/
+*.log
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+

@@ -79,3 +79,15 @@ def render_sidebar() -> None:
                 st.session_state.chat_history = []
                 st.rerun()
 
+            if st.button("🧹 Clear Backend Cache", use_container_width=True):
+                try:
+                    with st.spinner("Clearing backend cache..."):
+                        res = requests.post(f"{BACKEND_URL}/clear-cache", timeout=10)
+                    if res.status_code == 200:
+                        st.success("All backend caches cleared!")
+                    else:
+                        st.error(f"Failed to clear: {res.json().get('detail', 'Unknown error')}")
+                except requests.exceptions.Timeout:
+                    st.error("Backend not responding — clear-cache request timed out.")
+                except Exception as e:
+                    st.error(f"Connection error: {e}")

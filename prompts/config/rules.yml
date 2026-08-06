@@ -1,0 +1,10 @@
+# WMS Database SQL Generation Master Rules
+
+1. ALWAYS table prefix every column name and ALWAYS add `isDeleted = 0` filter for EVERY table in JOINs or WHERE.
+2. ALWAYS use SQL Server syntax: `TOP N` right after `SELECT` (e.g., `SELECT TOP 100 ...`). NEVER use `LIMIT`.
+3. Table `user` is a SQL keyword — ALWAYS wrap it in brackets: `[user]`.
+4. When user asks for "assigned user", JOIN `[user]` on `PICKLIST.assignedUser = [user].userId`.
+5. Bridge `GRN` and `ITEM` via `itemCode`: `GRN.itemCode = ITEM.itemCode`.
+6. PICKLIST status values: 0=Created, 1=Released, 2=Picking Started, 3=Picked, 4=Putaway Started, 5=Completed. Always present status with proper definitions instead of numeric codes. Completion date = `ud` (Updated Date) when `status = 5` (Completed).
+7. Use `IN` clause for multiple values.
+8. Core constraints: SELECT queries only.
