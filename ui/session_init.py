@@ -15,9 +15,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BACKEND_URL  = os.getenv("BACKEND_URL", "http://localhost:8000")
-OLLAMA_MODEL = os.getenv("MODEL_NAME", "qwen2.5-coder:7b")
-ROUTER_MODEL = os.getenv("ROUTER_MODEL_NAME", OLLAMA_MODEL)
+BACKEND_URL   = os.getenv("BACKEND_URL", "http://localhost:8000")
+GEMINI_MODEL  = os.getenv("GEMINI_MODEL", os.getenv("MODEL_NAME", "gemini-2.5-flash"))
+OLLAMA_MODEL  = GEMINI_MODEL  # Backwards compatibility alias
+ROUTER_MODEL  = os.getenv("ROUTER_MODEL_NAME", GEMINI_MODEL)
 
 DB_DIALECT = os.getenv("DB_DIALECT", "mysql")
 DB_HOST    = os.getenv("DB_HOST",    "localhost")
@@ -70,14 +71,16 @@ def initialize_session_state() -> None:
         pass
 
     try:
-        ollama_ok, ollama_msg = _check_backend_health()
+        gemini_ok, gemini_msg = _check_backend_health()
     except Exception as e:
-        ollama_ok, ollama_msg = False, str(e)
+        gemini_ok, gemini_msg = False, str(e)
 
     st.session_state["chat_history"]   = []
     st.session_state["schema"]         = default_schema
-    st.session_state["ollama_ok"]      = ollama_ok
-    st.session_state["ollama_msg"]     = ollama_msg
+    st.session_state["gemini_ok"]      = gemini_ok
+    st.session_state["gemini_msg"]     = gemini_msg
+    st.session_state["ollama_ok"]      = gemini_ok
+    st.session_state["ollama_msg"]     = gemini_msg
     st.session_state["schema_loaded"]  = default_loaded
     st.session_state["generating"]     = False
     st.session_state["pending_input"]  = None

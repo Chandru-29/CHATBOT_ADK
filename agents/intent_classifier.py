@@ -98,7 +98,6 @@ class EmbeddingIntentClassifier:
             log.warning(f"IntentClassifier: Embedding inference error ({e}). Falling back to WMS_AGENT.")
             return "WMS_AGENT", 0.88
 
-
     def _fallback_predict(self, question: str) -> str:
         """Fallback prediction using TextEmbedder cosine similarity."""
         from core.llm.embedder import TextEmbedder

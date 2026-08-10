@@ -1,9 +1,9 @@
 """
-tools.py — Defines the run_select_query() function stub that Ollama
-reads as a tool definition during the agent loop.
+tools.py — Defines the run_select_query() function stub that ADK Agents
+read as a tool definition during the agent reasoning loop.
 """
 
-# ── OLLAMA TOOL DEFINITION: Read-Only SQL Selector Stub ──
+# ── ADK TOOL DEFINITION: Read-Only SQL Selector Stub ──
 def run_select_query(sql_query: str) -> str:
     """
     Safely execute a read-only SELECT SQL query on the database.

@@ -3,9 +3,6 @@ sql_agent.py — The main SQL reasoning loop.
 
 Sends the user's question to the LLM, runs SQL via the MCP tool,
 feeds results back to the LLM, and repeats until a final answer is ready.
-
-Also handles quirky models (qwen) that output SQL as plain text
-instead of using structured tool calls — intercepted and executed anyway.
 """
 
 # ── MODULE TAG: SQL Generator Agent ──
@@ -17,6 +14,7 @@ from collections import defaultdict
 from typing import AsyncGenerator
 from mcp import ClientSession
 
+from google.genai import types
 from core.llm.llm_client import get_async_client
 from core.config.settings import MODEL_NAME, AGENT_MAX_STEPS
 from core.config.logger import get_logger
@@ -388,15 +386,39 @@ async def run_sql_agent(
         log.debug(f"Agent Step {step + 1}")
 
         temp = 0.0 if step == 0 else 0.3
-        llm_reply = await _async_client.chat(
-            model=MODEL_NAME,
-            messages=messages,
-            tools=[run_select_query],
-            options={"temperature": temp},
+        client = get_async_client()
+
+        # Build contents for Gemini SDK
+        system_instr = system_prompt
+        contents = []
+        for m in messages:
+            r = m.get("role")
+            c = m.get("content", "")
+            if r == "system":
+                system_instr = c
+                continue
+            role_name = "model" if r in ("bot", "assistant") else "user"
+            contents.append(types.Content(role=role_name, parts=[types.Part.from_text(text=str(c))]))
+
+        config = types.GenerateContentConfig(
+            system_instruction=system_instr if system_instr else None,
+            temperature=temp,
         )
 
-        assistant_msg = llm_reply.get("message", {}) if isinstance(llm_reply, dict) else llm_reply.message
-        tool_calls = assistant_msg.get("tool_calls") if isinstance(assistant_msg, dict) else getattr(assistant_msg, "tool_calls", None)
+        try:
+            llm_reply = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=contents,
+                config=config,
+            )
+            raw_text = llm_reply.text or ""
+            assistant_msg = {"role": "assistant", "content": raw_text}
+        except Exception as e:
+            log.error(f"Gemini generate_content error in sql_agent: {e}")
+            raw_text = ""
+            assistant_msg = {"role": "assistant", "content": ""}
+
+        tool_calls = None
 
         if tool_calls:
             # ── Normal path: LLM used structured tool_calls ───────────────
@@ -496,6 +518,19 @@ async def run_sql_agent(
             if "METADATA_REDIRECT" in raw_text and not is_metadata_query:
                 log.warning(f"[HallucinationGuard] Suppressed false-positive METADATA_REDIRECT for non-metadata query '{question}'. Forcing SQL generation.")
                 raw_text = raw_text.replace("METADATA_REDIRECT", "").strip()
+                # Force retry — the LLM produced METADATA_REDIRECT by mistake; push a correction message
+                if step < AGENT_MAX_STEPS - 1:
+                    messages.append(assistant_msg)
+                    messages.append({
+                        "role":    "user",
+                        "content": (
+                            "CRITICAL: You incorrectly returned METADATA_REDIRECT for a DATA query. "
+                            "The user is asking for actual data rows, NOT database structure information. "
+                            "You MUST call run_select_query with a valid SELECT statement immediately. "
+                            f"Question: {question}"
+                        ),
+                    })
+                    continue
 
             if "METADATA_REDIRECT" in raw_text or not sql_query:
                 if "METADATA_REDIRECT" not in raw_text and step < 2 and used_sql is None and not is_metadata_query:

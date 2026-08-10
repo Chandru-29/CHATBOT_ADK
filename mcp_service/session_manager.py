@@ -10,7 +10,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from core.config.logger import get_logger
-from sql_agent.sql_agent import (
+from agents.sql_agent import (
     run_sql_agent,
     format_simple_result,
     stream_answer_tokens,
@@ -62,8 +62,8 @@ async def execute_and_format_cached_query(
     question: str,
     agent_name: str,
     stream: bool,
-    timer: Any,
     hit_source: str = "semantic",
+    timer: Any = None,
 ) -> Tuple[bool, Union[dict, StreamingResponse]]:
     """Execute a cached SQL query on the DB and format the response."""
     db_output = None
@@ -134,7 +134,7 @@ async def run_with_session(
     agent_display_name: str,
     cache_key: str,
     stream: bool,
-    timer: Any,
+    timer: Any = None,
 ) -> Any:
     """Run the SQL agent loop with an open ClientSession."""
     result = await run_sql_agent(
@@ -159,7 +159,7 @@ async def run_per_request_session(
     agent_display_name: str,
     cache_key: str,
     stream: bool,
-    timer: Any,
+    timer: Any = None,
 ) -> Any:
     """Open a fresh stdio subprocess for this request (fallback path)."""
     server_params = make_server_params()

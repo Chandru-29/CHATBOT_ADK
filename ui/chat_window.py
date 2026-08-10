@@ -11,7 +11,7 @@ Call both from app.py after render_sidebar().
 import time
 import requests
 import streamlit as st
-from ui.session_init import BACKEND_URL, DB_NAME, OLLAMA_MODEL, ROUTER_MODEL
+from ui.session_init import BACKEND_URL, DB_NAME, GEMINI_MODEL, ROUTER_MODEL, OLLAMA_MODEL
 
 from ui import pipeline_panel as pp
 
@@ -283,7 +283,7 @@ def render_chat() -> None:
     st.markdown(f"""
     <div style='text-align: center; margin-bottom: 24px;'>
         <span class='status-pill'><span style='color:#10a37f;'>●</span> DB: <b>{DB_NAME}</b></span>
-        <span class='status-pill'><span style='color:#a855f7;'>●</span> Engine: <b>{OLLAMA_MODEL}</b></span>
+        <span class='status-pill'><span style='color:#a855f7;'>●</span> Engine: <b>{GEMINI_MODEL}</b></span>
         <span class='status-pill'><span style='color:#3b82f6;'>●</span> Schema: <b>{tables_count} Tables</b></span>
     </div>
     """, unsafe_allow_html=True)

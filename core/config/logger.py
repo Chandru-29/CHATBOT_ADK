@@ -68,7 +68,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         root_logger.removeHandler(handler)
 
     # ── Mute noisy third-party HTTP loggers ─────────────────────────────────
-    for quiet_logger in ("httpx", "httpcore", "ollama", "urllib3", "asyncio"):
+    for quiet_logger in ("httpx", "httpcore", "google.genai", "google", "urllib3", "asyncio"):
         logging.getLogger(quiet_logger).setLevel(logging.WARNING)
         
     # ── Console Handler (Colorized, stdout) ───────────────────────────────────

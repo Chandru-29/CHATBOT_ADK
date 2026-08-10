@@ -1,14 +1,17 @@
 """
-audit_logger.py — StitchGuard Structured Audit & Execution Pipeline Trace Logger.
+audit_logger.py — Staged Pipeline Trace Logger.
 
-Formats request lifecycle security audits and layer pass/fail statuses into
-metadata-rich, tree-like console and file logs matching enterprise trace specs.
+Emits structured, stage-numbered logs for every request lifecycle phase:
+  [1] CLIENT & RUNNER ENTRY
+  [2] MIDDLEWARE & GUARDRAILS (Layer 1-2)
+  [3] ROUTER AGENT & REPHRASING
+  [4] WMS SQL AGENT & TOOL EXECUTION (Layer 3-4)
+  [5] OUTPUT FORMATTING & SANITIZATION (Layer 5-6)
 """
 
 # ── MODULE TAG: Security Audit Logger ──
 import uuid
-import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 
 def generate_req_id() -> str:
@@ -16,130 +19,155 @@ def generate_req_id() -> str:
     return f"req_{uuid.uuid4().hex[:6]}"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — Client & Runner Entry
+# ─────────────────────────────────────────────────────────────────────────────
+
 def log_incoming_request(log, req_id: str, query: str, stream: bool = False):
-    """Log incoming request header and payload."""
-    payload_str = json.dumps({"query": query, "stream": stream})
-    log.info(f"━━━ INCOMING REQUEST [req_id={req_id}] ━━━")
-    log.info(f"Payload: {payload_str}")
+    """Log Stage 1: incoming request received."""
+    log.info(f"[1. CLIENT & RUNNER ENTRY]")
+    log.info(f"  └── Received Query: \"{query}\" | req_id={req_id} | stream={stream}")
 
 
-def log_execution_pipeline_trace(log, trace: Dict[str, Any]):
-    """Format and print the exact execution trace log block according to user specification."""
-    server_status = trace.get("server_status", "ONLINE")
-    db_status     = trace.get("db_status", "ONLINE")
-    llm_status    = trace.get("llm_status", "ONLINE")
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Middleware & Guardrails (L1 + L2 cache)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    user_q        = trace.get("user_question", "")
-    cache_str     = trace.get("cache_status", "MISS")
-    embedded_q    = trace.get("canonical_question") or user_q
-    intent        = trace.get("intent", "WMS_AGENT")
-    rephrase_str  = trace.get("rephrase_status", "Skipped (Self-contained query / No pronouns)")
-
-    is_general    = (intent == "GENERAL") or ("N/A" in str(trace.get("selected_tables_str", "")))
-
-    if is_general:
-        rag_section   = "N/A (General Chat)"
-        embedding_str = "N/A (General Chat)"
-        sim_score_str = "N/A (General Chat)"
-        sel_display   = "N/A (General Chat)"
+def log_l1_audit(log, req_id: str, is_safe: bool, has_write: bool,
+                 details_override: Optional[str] = None):
+    """Log Stage 2 L1: input sanitation result."""
+    if not is_safe or has_write:
+        status  = "BLOCKED"
+        details = details_override or (
+            "Write/DDL intent detected — read-only policy enforced"
+            if has_write else
+            "Prompt injection or length limit violated"
+        )
     else:
-        rag_section   = ""
-        embedding_str = trace.get("embedding_str", "Computed via Hugging Face all-MiniLM-L6-v2")
-        ex_score      = trace.get("exemplar_score", 0.88)
-        tbl_score     = trace.get("table_vector_score", 0.92)
-        sim_score_str = f"Top exemplar similarity score = {ex_score:.2f}, Table vector match score = {tbl_score:.2f}"
+        status  = "PASS"
+        details = details_override or "Input sanitized. No prompt injection or PII detected."
 
-        selected_cnt  = trace.get("selected_tables_count", 14)
-        selected_t    = trace.get("selected_tables_str", "FGMODEL, FGTRANSACTION, GRN, ITEM, ITEMLOCACNMAP, LOCATION, PICKLIST, PICKLISTITEM, PICKLISTVIEW, SKUITEM, SUIDACTIVITYLOG, SULOCATION, WAREHOUSE, user")
+    log.info(f"[2. MIDDLEWARE & GUARDRAILS (Layer 1-2)]")
+    log.info(f"  └── L1 Security Check: {details}")
+    if status == "BLOCKED":
+        log.warning(f"  └── ⛔ Request BLOCKED by L1 | req_id={req_id}")
 
-        if "(" in str(selected_t):
-            sel_display = str(selected_t)
-        else:
-            sel_display = f"{selected_cnt} ({selected_t})"
 
-    total_tables  = trace.get("total_tables_cataloged", 14)
-    compiled_sql  = trace.get("compiled_sql", "N/A")
-    total_ms      = trace.get("total_execution_ms", 0.0)
-    total_sec     = total_ms / 1000.0
-    http_status   = trace.get("http_status", "200 OK")
+def log_l2_cache(log, hit: bool, hit_source: str = ""):
+    """Log Stage 2 L2: cache hit/miss."""
+    if hit:
+        log.info(f"  └── L2 Semantic Cache: Cache HIT ({hit_source.upper()}). Returning cached result.")
+    else:
+        log.info(f"  └── L2 Semantic Cache: Cache miss. Proceeding to Agent workflow.")
 
-    formatted_log = (
-        f"\n"
-        f"server status : {server_status}\n"
-        f"dbStatus : {db_status}\n"
-        f"llm status : {llm_status}\n\n"
-        f"user query : {user_q}\n"
-        f"cache status : {cache_str}\n"
-        f"embedded user query : {embedded_q}\n"
-        f"intent detection : {intent}\n"
-        f"rephrasing status : {rephrase_str}\n"
-        f"rag: {rag_section if is_general else ''}\n\n"
-        f"embedding : {embedding_str}\n\n"
-        f"similarity check with score : {sim_score_str}\n\n"
-        f"total table count : {total_tables}\n\n"
-        f"selected table count with table names : {sel_display}\n"
-        f"sql query : {compiled_sql}\n"
-        f"overall time consumption : {total_ms:,.0f} ms ({total_sec:.1f}s)\n"
-        f"http status : {http_status}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 — Router Agent & Rephrasing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_router_decision(log, original_q: str, rephrased_q: str, intent: str,
+                        confidence: float, was_rephrased: bool):
+    """Log Stage 3: rephraser + router classification."""
+    log.info(f"[3. ROUTER AGENT & REPHRASING (Gemini 2.5 Flash)]")
+    if was_rephrased:
+        log.info(f"  └── Query Rephraser: Follow-up resolved → \"{rephrased_q}\"")
+    else:
+        log.info(f"  └── Query Rephraser: Self-contained query — no rephrasing needed.")
+    log.info(f"  └── Router Decision: Intent classified as {intent} (Confidence: {confidence:.2f}).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 4 — WMS SQL Agent & Tool Execution (L3 + L4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_rag_selection(log, tables: List[str], sim_score: float, threshold: float):
+    """Log Stage 4: VectorRAG table grounding result."""
+    log.info(f"[4. WMS SQL AGENT & TOOL EXECUTION (Layer 3-4)]")
+    tables_str = str(tables) if tables else "all domain tables (fallback)"
+    log.info(f"  └── VectorRAG Table Selector: Grounded tables → {tables_str} (Similarity: {sim_score:.2f} > {threshold:.2f})")
+
+
+def log_tool_execution(log, sql: str):
+    """Log Stage 4: SQL tool invocation."""
+    sql_preview = " ".join(sql.split())[:200]
+    log.info(f"  └── Tool Execution: Invoking ExecuteReadOnlySQL → {sql_preview}")
+
+
+def log_l3_l4_guardrails(log, l3_ok: bool, l4_ok: bool,
+                          l3_detail: str = "", l4_detail: str = ""):
+    """Log Stage 4: L3/L4 guardrail results."""
+    l3_msg = l3_detail or ("Table scope validated." if l3_ok else "Table scope violation.")
+    l4_msg = l4_detail or ("Read-only check passed. No write/drop intent found." if l4_ok else "Write/DDL intent detected.")
+    l3_icon = "✅" if l3_ok else "❌"
+    l4_icon = "✅" if l4_ok else "❌"
+    log.info(f"  └── L3 Table Scope Guard: {l3_icon} {l3_msg}")
+    log.info(f"  └── L4 Read-Only Guard: {l4_icon} {l4_msg}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 5 — Output Formatting & Sanitization (L5 + L6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_output_pipeline(log, req_id: str, intent: str, sql: Optional[str],
+                        duration_ms: float, status: str = "PASSED",
+                        l5_detail: str = "", l6_detail: str = ""):
+    """Log Stage 5: L5 redaction, L6 safety, response dispatch."""
+    total_sec = duration_ms / 1000.0
+    l5_msg = l5_detail or "No restricted/sensitive columns exposed."
+    l6_msg = l6_detail or "Output content safety checked."
+
+    log.info(f"[5. OUTPUT FORMATTING & SANITIZATION (Layer 5-6)]")
+    log.info(f"  └── L5 Sensitive Column Redaction: {l5_msg}")
+    log.info(f"  └── L6 Content Safety: {l6_msg}")
+
+    if sql:
+        log.info(f"  └── Deterministic Formatter: Converted SQL result rows into clean Markdown table.")
+    else:
+        log.info(f"  └── Deterministic Formatter: Natural language response composed (no SQL rows).")
+
+    log.info(
+        f"  └── Response Sent to Client | "
+        f"Latency: {total_sec:.2f}s | "
+        f"Intent: {intent} | "
+        f"Status: {status} | "
+        f"req_id={req_id}"
     )
-    log.info(formatted_log)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy compatibility shims (keep existing call-sites compiling)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_execution_pipeline_trace(log, trace: dict):
+    """Legacy shim — no-op (replaced by per-stage calls in runner.py)."""
+    pass
 
 
 def log_pipeline_terminated(log, req_id: str, total_ms: float, http_status: str = "200 OK"):
-    """Log the pipeline termination summary block."""
-    total_sec = total_ms / 1000.0
-    log.info(f"━━━ PIPELINE TERMINATED SUCCESSFULLY ━━━")
-    log.info(f"  ├── Total Execution Time    : {total_ms:,.0f} ms ({total_sec:.1f}s)")
-    log.info(f"  ├── Final HTTP Status       : {http_status}")
-    log.info(f"  └── Request ID Trace        : {req_id}\n")
+    """Legacy shim — kept for any external callers."""
+    pass
 
 
-def log_l1_audit(log, req_id: str, is_safe: bool, has_write: bool, details_override: Optional[str] = None):
-    if not is_safe or has_write:
-        status = "FAILED"
-        details = details_override or ("Inappropriate query or write intent detected" if has_write else "Prompt injection or length limit violated")
-    else:
-        status = "PASS"
-        details = details_override or "Injection check, PII masking & Write intent cleared"
-
-    log.info(f"STITCHGUARD_AUDIT | req_id={req_id} | status={'PASSED' if is_safe and not has_write else 'BLOCKED'}")
-    log.info(f"  ├── layer=L1 (Parallel) | status={status} | details=\"{details}\"")
-
-
-def log_audit_tree(
-    log,
-    req_id: str,
-    intent: str,
-    tables: List[str],
-    duration_ms: float,
-    status: str = "PASSED",
-    l3_details: Optional[str] = None,
-    l4_details: Optional[str] = None,
-    l5_details: Optional[str] = None,
-    l6_details: Optional[str] = None,
-    pipeline_info: str = "SQL generated & executed successfully",
-):
-    tables_str = ", ".join(tables) if tables else "all domain tables"
-    l3_msg = l3_details or f"Tables within {intent} scope ({tables_str})"
-    l4_msg = l4_details or "SQL structure valid (SELECT query)"
-    l5_msg = l5_details or "No restricted/sensitive columns exposed"
-    l6_msg = l6_details or "Output content safety checked"
-
-    log.info(f"STITCHGUARD_AUDIT | req_id={req_id} | status={status}")
-    log.info(f"  ├── layer=L2 | status=PASS | details=\"Routed to {intent}\"")
-    log.info(f"  ├── layer=L3 | status=PASS | details=\"{l3_msg}\"")
-    log.info(f"  ├── layer=L4 | status=PASS | details=\"{l4_msg}\"")
-    log.info(f"  ├── layer=L5 | status=PASS | details=\"{l5_msg}\"")
-    log.info(f"  ├── layer=L6 | status=PASS | details=\"{l6_msg}\"")
-    log.info(f"  └── pipeline=agent_loop | duration={duration_ms:.0f}ms | info=\"{pipeline_info}\"")
+def log_audit_tree(log, req_id: str, intent: str, tables: List[str],
+                   duration_ms: float, status: str = "PASSED",
+                   l3_details: Optional[str] = None,
+                   l4_details: Optional[str] = None,
+                   l5_details: Optional[str] = None,
+                   l6_details: Optional[str] = None,
+                   pipeline_info: str = "SQL generated & executed successfully"):
+    """Legacy shim — calls the new Stage 5 log for backward-compat finalize()."""
+    log_output_pipeline(
+        log=log,
+        req_id=req_id,
+        intent=intent,
+        sql="<from_result>",
+        duration_ms=duration_ms,
+        status=status,
+        l5_detail=l5_details or "",
+        l6_detail=l6_details or "",
+    )
 
 
 def log_final_answer(log, answer: str, intent: str, sql: Optional[str] = None):
-    sql_info = f"Executed SQL: {sql}" if sql else "No SQL executed"
-    log.info(
-        f"\n [FINAL FORMAT ANSWER]: \n"
-        f"{answer}\n"
-        f"(Intent: {intent} | {sql_info})"
-    )
+    """Legacy shim — no-op (answer is already formatted by formatter)."""
+    pass

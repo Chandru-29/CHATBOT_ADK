@@ -17,7 +17,7 @@ import json
 
 from core.config.logger import get_logger
 from core.config.settings import HISTORY_WINDOW, REPHRASER_MODEL_NAME, ROUTER_MODEL_NAME
-from routing.intent_classifier import classify_intent
+from agents.intent_classifier import classify_intent
 
 log = get_logger(__name__)
 
@@ -169,11 +169,10 @@ async def rephrase_and_route_with_score(question: str, chat_history: list) -> tu
         except Exception:
             pass
 
-    from routing.intent_classifier import get_intent_classifier
+    from agents.intent_classifier import get_intent_classifier
     clf = get_intent_classifier()
     intent, score = clf.predict_with_score(final_question)
     return final_question, intent, score
-
 
 
 # Synchronous fallback wrapper if called synchronously

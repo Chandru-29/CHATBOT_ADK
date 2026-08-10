@@ -10,7 +10,7 @@ Call render_sidebar() from app.py after initialising session state.
 import requests
 import streamlit as st
 from ui.session_init import (
-    BACKEND_URL, OLLAMA_MODEL, DB_DIALECT, DB_HOST, DB_NAME,
+    BACKEND_URL, GEMINI_MODEL, DB_DIALECT, DB_HOST, DB_NAME,
     _fetch_schema, _check_backend_health,
 )
 
@@ -28,7 +28,7 @@ def render_sidebar() -> None:
     with st.sidebar:
         # ── CAPTION & MAIN TITLE PANEL ────────────────────────────────────────────────
         st.markdown("###  CHATBOT")
-        st.caption(f"Powered by Ollama `{OLLAMA_MODEL}` + MySQL")
+        st.caption(f"Powered by Google Gemini `{GEMINI_MODEL}` + MySQL")
         st.divider()
 
         # ── BACKEND SERVICE STATUS CHECKS ──────────────────────────────────────────────
@@ -36,11 +36,16 @@ def render_sidebar() -> None:
         if st.button("Check Connection", use_container_width=True):
             with st.spinner("Checking..."):
                 ok, msg = _check_backend_health()
+                st.session_state.gemini_ok  = ok
+                st.session_state.gemini_msg = msg
                 st.session_state.ollama_ok  = ok
                 st.session_state.ollama_msg = msg
 
-        if st.session_state.ollama_msg:
-            if st.session_state.ollama_ok:
+        gemini_msg = getattr(st.session_state, "gemini_msg", getattr(st.session_state, "ollama_msg", ""))
+        gemini_ok  = getattr(st.session_state, "gemini_ok", getattr(st.session_state, "ollama_ok", False))
+
+        if gemini_msg:
+            if gemini_ok:
                 st.success("Backend connection active")
             else:
                 st.error("Backend connection offline")

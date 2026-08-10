@@ -262,7 +262,7 @@ class GuardrailsPipeline:
             return {"redacted_output": db_output, "redacted_columns": []}
 
         try:
-            from sql_agent.sql_agent import parse_db_result
+            from agents.sql_agent import parse_db_result
             columns, rows = parse_db_result(db_output)
         except Exception:
             return {"redacted_output": db_output, "redacted_columns": []}

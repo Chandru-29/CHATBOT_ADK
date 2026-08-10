@@ -61,3 +61,32 @@ def get_table_schemas_collection():
 def get_semantic_cache_collection():
     """Return the 'semantic_cache' Chroma collection."""
     return semantic_cache_collection
+
+
+def reset_semantic_cache_collection():
+    """Delete and recreate the 'semantic_cache' collection to handle dimension changes or schema wipes."""
+    global semantic_cache_collection
+    try:
+        chroma_client.delete_collection("semantic_cache")
+    except Exception:
+        pass
+    semantic_cache_collection = chroma_client.get_or_create_collection(
+        name="semantic_cache",
+        metadata=_COLLECTION_METADATA
+    )
+    return semantic_cache_collection
+
+
+def reset_table_schemas_collection():
+    """Delete and recreate the 'table_schemas' collection to handle dimension changes."""
+    global table_schemas_collection
+    try:
+        chroma_client.delete_collection("table_schemas")
+    except Exception:
+        pass
+    table_schemas_collection = chroma_client.get_or_create_collection(
+        name="table_schemas",
+        metadata=_COLLECTION_METADATA
+    )
+    return table_schemas_collection
+

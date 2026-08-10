@@ -6,7 +6,7 @@ table_selector.py — Semantic table selection using ChromaDB vector similarity.
 from typing import Any, Optional
 from core.config.settings import (
     DEFAULT_EMBED_MODEL,
-    OLLAMA_THRESHOLD,
+    VECTOR_RAG_THRESHOLD,
 )
 from core.config.logger import get_logger
 from db.chromadb import get_table_schemas_collection
@@ -23,17 +23,18 @@ class TableSelector:
 
     def __init__(
         self,
-        use_local_ollama: bool = True,
+        use_api_embeddings: bool = True,
         embed_model: str = DEFAULT_EMBED_MODEL,
+        use_local_ollama: bool = True,
     ) -> None:
         self._embedder = TextEmbedder(embed_model=embed_model)
 
-        if not use_local_ollama:
-            self._embedder._ollama_available = False
+        if not (use_api_embeddings and use_local_ollama):
+            self._embedder._api_available = False
 
         mode = (
-            f"Ollama ({embed_model})"
-            if self._embedder._ollama_available
+            f"Gemini API ({embed_model})"
+            if self._embedder._api_available
             else "Mock trigram mode"
         )
         log.debug(f"TableSelector: active embedding mode: {mode}")
@@ -51,8 +52,8 @@ class TableSelector:
 
         if threshold is None:
             threshold = (
-                OLLAMA_THRESHOLD
-                if self._embedder._ollama_available
+                VECTOR_RAG_THRESHOLD
+                if self._embedder._api_available
                 else MOCK_THRESHOLD
             )
 
@@ -113,7 +114,7 @@ class TableSelector:
             return set(), 0.0
 
         if threshold is None:
-            threshold = OLLAMA_THRESHOLD
+            threshold = VECTOR_RAG_THRESHOLD
 
         q_vec = self._embedder.embed(question)
         collection = get_table_schemas_collection()

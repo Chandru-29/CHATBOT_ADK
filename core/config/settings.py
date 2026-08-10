@@ -13,12 +13,14 @@ load_dotenv(override=True)
 PROJECT_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-# ── LLM ───────────────────────────────────────────────────────────────────────
-MODEL_NAME:  str   = os.getenv("MODEL_NAME", "qwen2.5-coder:7b")
-ROUTER_MODEL_NAME:    str = os.getenv("ROUTER_MODEL_NAME", "qwen2.5-coder:7b")
-REPHRASER_MODEL_NAME: str = os.getenv("REPHRASER_MODEL_NAME", "qwen2.5-coder:7b")
-MAX_RETRIES: int   = 3
-DB_TIMEOUT:  float = 10.0
+# ── LLM & Gemini Config ──────────────────────────────────────────────────────
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", os.getenv("MODEL_NAME", "gemini-2.5-flash"))
+MODEL_NAME: str = GEMINI_MODEL
+ROUTER_MODEL_NAME: str = os.getenv("ROUTER_MODEL_NAME", GEMINI_MODEL)
+REPHRASER_MODEL_NAME: str = os.getenv("REPHRASER_MODEL_NAME", GEMINI_MODEL)
+MAX_RETRIES: int = 3
+DB_TIMEOUT: float = 10.0
 
 # ── Database connection ────────────────────────────────────────────────────────
 DB_DIALECT:  str = os.getenv("DB_DIALECT",  "mysql")
@@ -42,10 +44,12 @@ WMS_TABLES: frozenset = frozenset({
 })
 
 # ── RAG / embedding ────────────────────────────────────────────────────────────
-DEFAULT_EMBED_MODEL: str   = "nomic-embed-text"
-OLLAMA_THRESHOLD:    float = 0.70  # cosine sim cutoff for real Ollama embeddings
-MOCK_DIM:            int   = 512    # hash-bucket vector dimension
-REGISTRY_TTL:        int   = 3600*6  
+GEMINI_EMBED_MODEL: str = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+DEFAULT_EMBED_MODEL: str = GEMINI_EMBED_MODEL
+VECTOR_RAG_THRESHOLD: float = 0.70  # Cosine similarity cutoff for RAG table vector search
+OLLAMA_THRESHOLD: float = VECTOR_RAG_THRESHOLD  # Backwards compatibility alias
+MOCK_DIM: int = 512  # Hash-bucket vector dimension
+REGISTRY_TTL: int = 3600 * 6  
 
 # ── Semantic cache ─────────────────────────────────────────────────────────────
 SEMANTIC_CACHE_THRESHOLD: float = 0.99  # cosine sim cutoff for semantic cache hits

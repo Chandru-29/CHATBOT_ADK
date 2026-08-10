@@ -24,7 +24,7 @@ log = get_logger(__name__)
 api_cache: dict = TTLCache(maxsize=100, ttl=API_CACHE_TTL)
 _embedder = TextEmbedder(embed_model=DEFAULT_EMBED_MODEL)
 _sem_cache = SemanticCache(embedder=_embedder)
-_table_selector = TableSelector(use_local_ollama=True)
+_table_selector = TableSelector(use_api_embeddings=True)
 
 
 def get_api_cache() -> dict:
