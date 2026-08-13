@@ -12,15 +12,21 @@ log = get_logger(__name__)
 
 
 class _DummyEngine:
-    """Lightweight stub that mimics a SQLAlchemy Engine interface."""
+    """Lightweight stub mimicking a SQLAlchemy Engine interface for HTTP API database access."""
 
-    def connect(self):
+    def connect(self) -> None:
+        """Attempt direct database connection.
+
+        Raises:
+            RuntimeError: Always raised because direct SQL connections are disabled.
+        """
         raise RuntimeError(
             "Direct DB connections are disabled. "
             f"All queries must go through the WMS HTTP API: {WMS_API_URL}"
         )
 
-    def dispose(self):
+    def dispose(self) -> None:
+        """Clean up connection pool resources (no-op stub)."""
         pass
 
 

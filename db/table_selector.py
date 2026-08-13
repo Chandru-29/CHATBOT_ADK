@@ -19,7 +19,11 @@ MOCK_THRESHOLD = 0.35
 
 
 class TableSelector:
-    """RAG-based selector that narrows down target tables based on ChromaDB vector query similarity."""
+    """Picks only the database tables needed to answer a specific user question.
+
+    Attributes:
+        _embedder: Tool that turns text into numbers to compare meanings.
+    """
 
     def __init__(
         self,
@@ -27,13 +31,20 @@ class TableSelector:
         embed_model: str = DEFAULT_EMBED_MODEL,
         use_local_ollama: bool = True,
     ) -> None:
+        """Set up the TableSelector.
+
+        Args:
+            use_api_embeddings (bool, optional): True to use the primary embedding model. Defaults to True.
+            embed_model (str, optional): Model name to use. Defaults to DEFAULT_EMBED_MODEL.
+            use_local_ollama (bool, optional): True to enable local model fallback. Defaults to True.
+        """
         self._embedder = TextEmbedder(embed_model=embed_model)
 
         if not (use_api_embeddings and use_local_ollama):
             self._embedder._api_available = False
 
         mode = (
-            f"Gemini API ({embed_model})"
+            f"SentenceTransformer ({embed_model})"
             if self._embedder._api_available
             else "Mock trigram mode"
         )
@@ -46,7 +57,17 @@ class TableSelector:
         engine,
         threshold:        float | None = None,
     ) -> set[str]:
-        """Narrows the table candidate list down to relevant tables using ChromaDB vector query."""
+        """Find and return database tables that match the meaning of the question.
+
+        Args:
+            question (str): The user's question.
+            candidate_tables (set): Set of database table names to search through.
+            engine: Database connection helper.
+            threshold (float | None, optional): Similarity score cutoff. Defaults to None.
+
+        Returns:
+            set[str]: A set of selected table names needed for the query.
+        """
         if not candidate_tables:
             return set()
 
@@ -108,7 +129,17 @@ class TableSelector:
         engine: Any = None,
         threshold: Optional[float] = None,
     ) -> tuple[set[str], float]:
-        """Select tables and return (matched_tables, top_vector_match_score)."""
+        """Pick relevant database tables and return the best match similarity score.
+
+        Args:
+            question (str): The user's question.
+            candidate_tables (frozenset | set | list): List or set of candidate table names.
+            engine (Any, optional): Database helper object. Defaults to None.
+            threshold (Optional[float], optional): Minimum similarity score required. Defaults to None.
+
+        Returns:
+            tuple[set[str], float]: Set of selected table names and the highest similarity score.
+        """
         candidate_list = sorted(list(candidate_tables))
         if not candidate_list:
             return set(), 0.0
@@ -154,9 +185,8 @@ class TableSelector:
 
         return matched, top_score
 
-
     def clear_cache(self) -> None:
-        """Clear all cached embeddings in ChromaDB 'table_schemas' collection."""
+        """Wipe saved table descriptions from the search memory."""
         try:
             collection = get_table_schemas_collection()
             all_ids = collection.get()["ids"]

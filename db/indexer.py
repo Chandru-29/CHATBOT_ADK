@@ -16,7 +16,7 @@ def build_rich_table_doc(table_name: str, schema_str: str) -> str:
     block_header = f"Table: [{table_name}]" if table_name.lower() == "user" else f"Table: {table_name}"
     cols_text = ""
 
-    for line in schema_str.split("\n\n"):
+    for line in schema_str.split("\n"):
         if line.startswith(block_header):
             cols_text = line
             break

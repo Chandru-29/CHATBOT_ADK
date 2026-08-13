@@ -151,16 +151,12 @@ rules:
   - "CRITICAL: Use TOP N instead of LIMIT N for row limiting (SQL Server syntax)."
   - "CRITICAL: Always wrap the user table as [user] in square brackets — it is a reserved keyword in SQL Server."
 
-# SQL CODER DIRECTIVE
+# SQL CODER DIRECTIVE (Optimized for Gemini Context Prefix Caching)
 coder_sql_directive: |
   <system_role>
   You are an expert Warehouse Management System (WMS) SQL Assistant with read-only database access.
   Your primary task is to help users query WMS data safely and accurately.
   </system_role>
-
-  <database_schema>
-  {schema_context}
-  </database_schema>
 
   <critical_rules>
   1. ZERO YAPPING: DO NOT return conversational filler, markdown code blocks (e.g., ```sql), or explanations when generating SQL.
@@ -200,3 +196,7 @@ coder_sql_directive: |
   <output_format>
   SELECT column_name FROM table_name WHERE condition AND table_name.isDeleted = 0;
   </output_format>
+
+  <database_schema>
+  {schema_context}
+  </database_schema>

@@ -26,28 +26,47 @@ log = get_logger(__name__)
 
 
 def make_server_params() -> StdioServerParameters:
-    """Build StdioServerParameters for launching MCP sql_executor subprocess."""
+    """Build configuration settings needed to start the database connection helper.
+
+    Returns:
+        StdioServerParameters: Configuration object for starting the background database process.
+    """
     from api.app_factory import build_server_params
     return build_server_params()
 
 
-def get_persistent_session() -> Optional[ClientSession]:
-    """Return active persistent MCP ClientSession or None if not ready."""
-    try:
-        from api.app_factory import get_mcp_session
-        return get_mcp_session()
-    except Exception:
-        return None
+def get_persistent_session() -> None:
+    """Old helper function kept so old code doesn't break. Always returns None.
+
+    Returns:
+        None: Always None because database connections are managed by a pool now.
+    """
+    return None
 
 
-async def execute_sql_with_session(session: ClientSession, sql: str) -> str:
-    """Execute a read-only SQL query via the provided ClientSession tool call."""
+async def execute_sql_with_session(session, sql: str) -> str:
+    """Run a read-only SQL query on the database using an active connection.
+
+    Args:
+        session: Active connection session to the database helper.
+        sql (str): The SELECT SQL query string to run.
+
+    Returns:
+        str: The raw text result returned from the database.
+    """
     result = await session.call_tool("execute_read_only_query", {"sql_query": sql})
     return result.content[0].text if result.content else ""
 
 
-async def execute_sql_per_request(sql: str) -> str:
-    """Open a temporary stdio subprocess to execute a SQL query (fallback path)."""
+async def _execute_sql_subprocess_fallback(sql: str) -> str:
+    """Run a SQL query by opening a temporary background process if the main pool is busy.
+
+    Args:
+        sql (str): The SELECT SQL query to run.
+
+    Returns:
+        str: The result text from the temporary process.
+    """
     server_params = make_server_params()
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -65,27 +84,36 @@ async def execute_and_format_cached_query(
     hit_source: str = "semantic",
     timer: Any = None,
 ) -> Tuple[bool, Union[dict, StreamingResponse]]:
-    """Execute a cached SQL query on the DB and format the response."""
-    db_output = None
-    persistent_session = get_persistent_session()
+    """Run a cached SQL query on the database and format the final answer for the user.
 
-    if persistent_session is not None:
+    Args:
+        sql (str): The SQL query string to execute.
+        intent (str): The category or type of user question.
+        question (str): The original question typed by the user.
+        agent_name (str): Name of the AI agent handling the question.
+        stream (bool): True to stream answer piece by piece, False for a full response.
+        hit_source (str, optional): Where the cache hit came from (e.g. "semantic"). Defaults to "semantic".
+        timer (Any, optional): Timer used to track execution speed. Defaults to None.
+
+    Returns:
+        Tuple[bool, Union[dict, StreamingResponse]]: True/False success flag, and the formatted answer object or stream.
+    """
+    from mcp_service.mcp_session_pool import mcp_pool
+
+    db_output = None
+
+    if mcp_pool.is_ready:
         try:
-            db_output = await execute_sql_with_session(persistent_session, sql)
+            async with mcp_pool.acquire(timeout=4.0) as session:
+                db_output = await execute_sql_with_session(session, sql)
         except Exception as e:
-            log.warning(f"  Persistent MCP session failed during cached query execution ({e}). Restarting…")
-            try:
-                from api.app_factory import restart_mcp
-                fresh_session = await restart_mcp()
-                db_output = await execute_sql_with_session(fresh_session, sql)
-            except Exception as e2:
-                log.error(f"  MCP restart also failed: {e2}. Falling back to per-request spawn.")
+            log.warning(f"  MCPPool session failed during cached query ({e}). Falling back to subprocess.")
 
     if db_output is None:
         try:
-            db_output = await execute_sql_per_request(sql)
+            db_output = await _execute_sql_subprocess_fallback(sql)
         except Exception as e:
-            log.error(f"  Per-request MCP session failed for cached query: {e}")
+            log.error(f"  Subprocess fallback failed for cached query: {e}")
             return False, {}
 
     if is_db_error(db_output):
@@ -126,7 +154,7 @@ async def execute_and_format_cached_query(
 
 
 async def run_with_session(
-    session: ClientSession,
+    session,
     messages: list,
     system_prompt: str,
     question: str,
@@ -136,7 +164,22 @@ async def run_with_session(
     stream: bool,
     timer: Any = None,
 ) -> Any:
-    """Run the SQL agent loop with an open ClientSession."""
+    """Run the AI SQL generator loop using an active database connection.
+
+    Args:
+        session: Active connection session to the database helper.
+        messages (list): List of previous chat messages.
+        system_prompt (str): Instructions and rules for the AI model.
+        question (str): The question typed by the user.
+        intent (str): Category of the user query.
+        agent_display_name (str): Display name for the active agent.
+        cache_key (str): Unique key used for caching the result.
+        stream (bool): True to stream answer piece by piece, False for full response.
+        timer (Any, optional): Timer tracking performance. Defaults to None.
+
+    Returns:
+        Any: Final answer payload dict or streaming response.
+    """
     result = await run_sql_agent(
         session=session,
         messages=messages,
@@ -161,7 +204,36 @@ async def run_per_request_session(
     stream: bool,
     timer: Any = None,
 ) -> Any:
-    """Open a fresh stdio subprocess for this request (fallback path)."""
+    """Run the AI SQL agent by borrowing a database connection from the connection pool.
+
+    Args:
+        messages (list): Chat history messages list.
+        system_prompt (str): Rules and instructions for the AI.
+        question (str): User question text.
+        intent (str): Intent category string.
+        agent_display_name (str): Display name of the agent.
+        cache_key (str): Unique key used to store or fetch from cache.
+        stream (bool): True for streaming tokens piece by piece, False otherwise.
+        timer (Any, optional): Speed timer object. Defaults to None.
+
+    Returns:
+        Any: Execution result dictionary or streaming response.
+    """
+    from mcp_service.mcp_session_pool import mcp_pool
+
+    if mcp_pool.is_ready:
+        try:
+            async with mcp_pool.acquire(timeout=4.0) as session:
+                return await run_with_session(
+                    session, messages, system_prompt, question, intent,
+                    agent_display_name, cache_key, stream, timer,
+                )
+        except RuntimeError as pool_err:
+            log.warning(f"  MCPPool exhausted: {pool_err}. Falling back to subprocess.")
+        except Exception as e:
+            log.warning(f"  MCPPool session error: {e}. Falling back to subprocess.")
+
+    log.warning("  MCPPool not ready — using per-request subprocess spawn (high latency fallback).")
     server_params = make_server_params()
     try:
         async with stdio_client(server_params) as (read, write):

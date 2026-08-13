@@ -18,17 +18,26 @@ _classifier_instance = None
 
 
 class EmbeddingIntentClassifier:
-    """Zero-LLM Intent Classifier using local sentence-transformers all-MiniLM-L6-v2 embeddings."""
+    """Classifies user questions into categories (database vs chat) using local text comparison.
+
+    Attributes:
+        model_name (str): Name of the text comparison model.
+    """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        """Set up the EmbeddingIntentClassifier.
+
+        Args:
+            model_name (str, optional): Name of the text embedding model. Defaults to "all-MiniLM-L6-v2".
+        """
         self.model_name = model_name
         self.model = None
         self.exemplar_vectors = {}
         self._fallback_mode = False
         self._init_classifier()
 
-    def _init_classifier(self):
-        """Initialize SentenceTransformer model and precompute exemplar embeddings."""
+    def _init_classifier(self) -> None:
+        """Load the local AI model and pre-calculate sample question meanings."""
         try:
             from sentence_transformers import SentenceTransformer
             log.info(f"IntentClassifier: Loading local HuggingFace embedding model '{self.model_name}'...")
@@ -39,8 +48,8 @@ class EmbeddingIntentClassifier:
             log.warning(f"IntentClassifier: SentenceTransformer load failed ({e}). Falling back to TextEmbedder.")
             self._fallback_mode = True
 
-    def _precompute_exemplars(self):
-        """Extract exemplars from examples.yml via PromptLoader and pre-compute embedding vectors."""
+    def _precompute_exemplars(self) -> None:
+        """Convert sample question examples into stored numbers for fast similarity matching."""
         exemplar_dict = prompt_loader.get_exemplar_questions_by_intent()
         for intent, questions in exemplar_dict.items():
             if questions:
@@ -52,7 +61,14 @@ class EmbeddingIntentClassifier:
                 log.debug(f"IntentClassifier: Embedded {len(questions)} exemplars for domain '{intent}'")
 
     def predict(self, question: str) -> str:
-        """Classify question intent by computing cosine similarity against pre-computed exemplar vectors."""
+        """Categorize a question by comparing it against saved sample questions.
+
+        Args:
+            question (str): The question typed by the user.
+
+        Returns:
+            str: The category name (`"WMS_AGENT"` for database queries, `"GENERAL"` for chat).
+        """
         if self._fallback_mode or not self.model:
             return self._fallback_predict(question)
 
@@ -76,7 +92,16 @@ class EmbeddingIntentClassifier:
             return "WMS_AGENT"
 
     def predict_with_score(self, question: str) -> tuple[str, float]:
-        """Classify question intent and return (intent, top_cosine_similarity_score)."""
+        """Categorize a question and return the category name along with a match score.
+
+        Args:
+            question (str): The question typed by the user.
+
+        Returns:
+            tuple[str, float]: A tuple containing:
+                - str: The predicted category name.
+                - float: The similarity match score (0.0 to 1.0).
+        """
         if self._fallback_mode or not self.model:
             return self._fallback_predict(question), 0.88
 
@@ -99,7 +124,14 @@ class EmbeddingIntentClassifier:
             return "WMS_AGENT", 0.88
 
     def _fallback_predict(self, question: str) -> str:
-        """Fallback prediction using TextEmbedder cosine similarity."""
+        """Backup method to categorize questions if the primary AI model fails.
+
+        Args:
+            question (str): The question typed by the user.
+
+        Returns:
+            str: The predicted category name.
+        """
         from core.llm.embedder import TextEmbedder
         embedder = TextEmbedder()
         q_vec = embedder.embed(question)
@@ -120,7 +152,11 @@ class EmbeddingIntentClassifier:
 
 
 def get_intent_classifier() -> EmbeddingIntentClassifier:
-    """Return singleton instance of EmbeddingIntentClassifier."""
+    """Get the active shared instance of the question intent classifier.
+
+    Returns:
+        EmbeddingIntentClassifier: The active classifier instance.
+    """
     global _classifier_instance
     if _classifier_instance is None:
         _classifier_instance = EmbeddingIntentClassifier()
@@ -128,6 +164,13 @@ def get_intent_classifier() -> EmbeddingIntentClassifier:
 
 
 def classify_intent(question: str) -> str:
-    """Classify user question intent using HuggingFace all-MiniLM-L6-v2 embeddings."""
+    """Categorize a user question into database query or general chat.
+
+    Args:
+        question (str): The user's input question.
+
+    Returns:
+        str: The category name (`"WMS_AGENT"` or `"GENERAL"`).
+    """
     clf = get_intent_classifier()
     return clf.predict(question)

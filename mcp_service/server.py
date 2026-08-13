@@ -32,7 +32,14 @@ _sql_cache: TTLCache = TTLCache(maxsize=50, ttl=_SQL_CACHE_TTL)
 
 
 def _call_api(sql_query: str) -> str:
-    """POST the SQL query to the WMS HTTP API and convert result into plain-text columnar format."""
+    """Post SQL query to WMS HTTP API and convert JSON response into formatted text table.
+
+    Args:
+        sql_query (str): SQL SELECT query string to execute.
+
+    Returns:
+        str: Formatted plain-text columnar result string or error message.
+    """
     try:
         response = requests.post(
             API_URL,
@@ -83,7 +90,14 @@ def _call_api(sql_query: str) -> str:
 
 @mcp.tool()
 def execute_read_only_query(sql_query: str) -> str:
-    """Safely execute a read-only SELECT SQL query via the WMS HTTP API."""
+    """Safely execute a read-only SELECT SQL query via the WMS HTTP API.
+
+    Args:
+        sql_query (str): SQL SELECT query string to validate and execute.
+
+    Returns:
+        str: Query result data table string or guardrail/execution error message.
+    """
     is_safe, error_msg = is_safe_sql_query(sql_query)
     if not is_safe:
         return f"Error: {error_msg}"

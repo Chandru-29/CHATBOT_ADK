@@ -21,13 +21,14 @@ from agents.intent_classifier import classify_intent
 
 log = get_logger(__name__)
 
-# Rule-based greeting/farewell/thanks filter (saves LLM call)
+# Rule-based greeting/farewell/thanks/praise filter (saves LLM call)
 _GENERAL_PATTERNS: list[re.Pattern] = [re.compile(p, re.IGNORECASE) for p in [
     r"^\s*(hi|hello|hey|good\s+(morning|afternoon|evening|day|night))[!.,\s]*$",
     r"^\s*(bye|goodbye|see\s+you|take\s+care|farewell)[!.,\s]*$",
     r"^\s*(thanks?|thank\s+you|ty|thx|cheers)[!.,\s]*$",
-    r"^\s*(ok|okay|got\s+it|noted|sounds?\s+good|great|nice|cool|sure|perfect)[!.,\s]*$",
+    r"^\s*(ok|okay|got\s+it|noted|sounds?\s+good|great|nice|cool|sure|perfect|awesome|brilliant|wonderful)[!.,\s]*$",
     r"^\s*(yes|no|yep|nope|yeah|nah)[!.,\s]*$",
+    r".*\b(you\s+are|you're|who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|who\s+made\s+you|who\s+created\s+you)\b.*",
 ]]
 
 _VALID_INTENTS = {"GENERAL", "WMS_AGENT"}
@@ -45,7 +46,14 @@ _ELLIPSIS_PATTERN = re.compile(
 
 # ── STITCHGUARD GUARDRAIL: Layer 2 - Fast-Path Conversational Pre-Filter ──
 def is_simple_conversational_turn(question: str) -> bool:
-    """Return True if the question is a basic greeting, farewell, thanks or agreement."""
+    """Check if the user is saying a simple greeting, thank you, or goodbye.
+
+    Args:
+        question (str): The question or message typed by the user.
+
+    Returns:
+        bool: True if it is a simple greeting or farewell, False if it is a data question.
+    """
     for pattern in _GENERAL_PATTERNS:
         if pattern.match(question.strip()):
             return True
@@ -54,9 +62,14 @@ def is_simple_conversational_turn(question: str) -> bool:
 
 # ── OPTION A: CONDITIONAL REPHRASING CHECK ─────────────────────────────────────
 def needs_rephrasing(question: str, chat_history: list) -> bool:
-    """
-    Option A: Return True only if chat_history exists AND the question contains
-    coreference pronouns or short elliptical follow-up expressions.
+    """Check if a follow-up question contains words like "it", "them", or "their" that need context from history.
+
+    Args:
+        question (str): The current user question.
+        chat_history (list): Previous chat messages list.
+
+    Returns:
+        bool: True if the question needs to be rewritten with past context, False if it stands on its own.
     """
     if not chat_history:
         return False
@@ -88,11 +101,16 @@ def needs_rephrasing(question: str, chat_history: list) -> bool:
 
 # ── STITCHGUARD GUARDRAIL: Layer 2 - Intent Classification & Routing Engine ──
 async def rephrase_and_route(question: str, chat_history: list) -> tuple[str, str]:
-    """ 
-    Route intent via zero-LLM local embedding model and conditionally rephrase follow-up queries.
-    
+    """Rewrite follow-up questions to be self-contained and categorize the user's intent.
+
+    Args:
+        question (str): User question text.
+        chat_history (list): Conversation history list.
+
     Returns:
-        (rephrased_question, intent_label)
+        tuple[str, str]: A tuple containing:
+            - str: The clean, standalone question text.
+            - str: The intent category (`"WMS_AGENT"` for database queries, `"GENERAL"` for chat).
     """
     # ── STEP 1: CONVERSATIONAL PRE-FILTERING (GREETINGS, THANKS, FAREWELLS) ────────
     if is_simple_conversational_turn(question):
@@ -132,14 +150,30 @@ async def rephrase_and_route(question: str, chat_history: list) -> tuple[str, st
             log.warning(f"Router: Rephrasing failed ({e}), using raw question.")
 
     # ── STEP 3: ZERO-LLM INTENT CLASSIFICATION ON CONTEXTUALIZED QUESTION ──────────
-    intent = classify_intent(final_question)
-    log.info(f"Router: [HF Embedding Classifier] intent={intent} for query='{final_question[:60]}'")
+    from agents.intent_classifier import get_intent_classifier
+    clf = get_intent_classifier()
+    intent, score = clf.predict_with_score(final_question)
+    if score < 0.30 and intent == "WMS_AGENT":
+        log.info(f"Router: Low similarity score ({score:.4f} < 0.30) -> Defaulting to GENERAL intent")
+        intent = "GENERAL"
+    log.info(f"Router: [HF Embedding Classifier] intent={intent} (score={score:.4f}) for query='{final_question[:60]}'")
 
     return final_question, intent
 
 
 async def rephrase_and_route_with_score(question: str, chat_history: list) -> tuple[str, str, float]:
-    """Route intent via local embedding model and return score."""
+    """Rewrite follow-up questions and return the intent category along with a confidence score.
+
+    Args:
+        question (str): User question text.
+        chat_history (list): Conversation history list.
+
+    Returns:
+        tuple[str, str, float]: A tuple containing:
+            - str: The clean, standalone question text.
+            - str: The intent category.
+            - float: The confidence score for the classification (0.0 to 1.0).
+    """
     if is_simple_conversational_turn(question):
         return question, "GENERAL", 1.0
 
@@ -172,11 +206,23 @@ async def rephrase_and_route_with_score(question: str, chat_history: list) -> tu
     from agents.intent_classifier import get_intent_classifier
     clf = get_intent_classifier()
     intent, score = clf.predict_with_score(final_question)
+    if score < 0.30 and intent == "WMS_AGENT":
+        log.info(f"Router: Low similarity score ({score:.4f} < 0.30) -> Defaulting to GENERAL intent")
+        intent = "GENERAL"
     return final_question, intent, score
 
 
 # Synchronous fallback wrapper if called synchronously
 def rephrase_and_route_sync(question: str, chat_history: list) -> tuple[str, str]:
+    """Synchronous helper wrapper for rephrase_and_route.
+
+    Args:
+        question (str): User question text.
+        chat_history (list): Conversation history list.
+
+    Returns:
+        tuple[str, str]: Standalone question text and intent category tuple.
+    """
     import asyncio
     return asyncio.run(rephrase_and_route(question, chat_history))
 

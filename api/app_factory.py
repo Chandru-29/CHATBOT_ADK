@@ -32,9 +32,17 @@ _mcp_state: dict = {
 
 _server_params: StdioServerParameters | None = None
 
+# ── MCP Session Pool (replaces single session) ──────────────────────────────────
+# The pool is imported here so it can be started/stopped in the lifespan handler.
+from mcp_service.mcp_session_pool import mcp_pool  # noqa: E402
+
 
 def build_server_params() -> StdioServerParameters:
-    """Construct parameters to run FastMCP server script as a python subprocess."""
+    """Construct parameters to run FastMCP server script as a Python subprocess.
+
+    Returns:
+        StdioServerParameters: FastMCP server subprocess parameter configuration.
+    """
     server_script = os.path.join(
         PROJECT_ROOT, "mcp_service", "server.py"
     )
@@ -46,59 +54,49 @@ def build_server_params() -> StdioServerParameters:
 
 
 async def _start_mcp() -> None:
-    """Spawn the MCP subprocess and initialise a persistent ClientSession."""
+    """Initialize and start the persistent MCP session pool."""
     global _server_params
     _server_params = build_server_params()
-
-    cm_stdio = stdio_client(_server_params)
-    read, write = await cm_stdio.__aenter__()
-
-    cm_sess = ClientSession(read, write)
-    session = await cm_sess.__aenter__()
-
-    await session.initialize()
-    await session.list_tools()
-
-    _mcp_state["read"]     = read
-    _mcp_state["write"]    = write
-    _mcp_state["session"]  = session
-    _mcp_state["cm_stdio"] = cm_stdio
-    _mcp_state["cm_sess"]  = cm_sess
-    log.info("MCP persistent session initialized (src/domain/mcp/server.py subprocess running)")
+    try:
+        await mcp_pool.start(_server_params)
+        _mcp_state["session"] = None
+        log.info(
+            f"MCPSessionPool started with {mcp_pool.size} sessions "
+            f"({mcp_pool.available} available)."
+        )
+    except Exception as e:
+        log.error(f"MCPSessionPool startup failed: {e}")
 
 
 async def _stop_mcp() -> None:
-    """Cleanly shut down the persistent MCP session and subprocess."""
+    """Shut down and terminate all sessions in the MCP session pool."""
     try:
-        if _mcp_state["cm_sess"]:
-            await _mcp_state["cm_sess"].__aexit__(None, None, None)
+        await mcp_pool.stop()
     except Exception as e:
-        log.warning(f"MCP session close warning: {e}")
-    try:
-        if _mcp_state["cm_stdio"]:
-            await _mcp_state["cm_stdio"].__aexit__(None, None, None)
-    except Exception as e:
-        log.warning(f"MCP stdio close warning: {e}")
+        log.warning(f"MCPSessionPool stop warning: {e}")
     for key in ("read", "write", "session", "cm_stdio", "cm_sess"):
         _mcp_state[key] = None
-    log.info("MCP persistent session closed")
+    log.info("MCPSessionPool shut down.")
 
 
-def get_mcp_session() -> ClientSession | None:
-    """Return the active persistent MCP ClientSession, or None if not ready."""
-    return _mcp_state.get("session")
+def get_mcp_session() -> None:
+    """Legacy compatibility MCP session getter shim.
+
+    Returns:
+        None: Always returns None as sessions are managed via MCPSessionPool.
+    """
+    return None
 
 
-async def restart_mcp() -> ClientSession:
-    """Teardown and restart the MCP subprocess."""
-    log.warning("MCP restart triggered — reconnecting to src/domain/mcp/server.py subprocess…")
+async def restart_mcp() -> None:
+    """Restart the full MCP session pool."""
+    log.warning("MCP restart triggered — restarting session pool…")
     await _stop_mcp()
     await _start_mcp()
-    return _mcp_state["session"]
 
 
 async def _daily_semantic_cache_flusher() -> None:
-    """Background worker task that automatically flushes the ChromaDB 'semantic_cache' collection every 24 hours."""
+    """Background worker task that automatically flushes the ChromaDB semantic_cache collection every 24 hours."""
     log.info("SemanticCache: Daily 24-hour background flusher task initialized.")
     while True:
         try:
@@ -113,9 +111,19 @@ async def _daily_semantic_cache_flusher() -> None:
             log.error(f"SemanticCache: Error during daily 24-hour cache flush: {e}")
 
 
+from redis_store import redis_manager, redis_semantic_cache, RedisRateLimitMiddleware
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Start persistent MCP & background 24h cache flusher on startup; cleanly close on shutdown."""
+    """FastAPI application lifespan context manager.
+
+    Args:
+        app (FastAPI): Active FastAPI application instance.
+
+    Yields:
+        None: Controls application startup and shutdown lifecycle hooks.
+    """
     try:
         await _start_mcp()
     except Exception as e:
@@ -123,6 +131,13 @@ async def _lifespan(app: FastAPI):
             f"MCP startup failed ({e}). "
             "Requests will fall back to per-request spawn."
         )
+
+    try:
+        redis_client = await redis_manager.connect()
+        if redis_client is not None:
+            await redis_semantic_cache.init_index()
+    except Exception as e:
+        log.warning(f"Redis lifespan startup warning: {e}")
 
     flusher_task = asyncio.create_task(_daily_semantic_cache_flusher())
 
@@ -135,10 +150,15 @@ async def _lifespan(app: FastAPI):
         pass
 
     await _stop_mcp()
+    await redis_manager.close()
 
 
 def create_app() -> FastAPI:
-    """Build and return the configured FastAPI application."""
+    """Build and configure the main FastAPI web application instance.
+
+    Returns:
+        FastAPI: Configured FastAPI application instance with routes and middleware registered.
+    """
     from api.routes import router as query_router
 
     app = FastAPI(title="NL to SQL Chatbot API", lifespan=_lifespan)
@@ -150,7 +170,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RedisRateLimitMiddleware)
 
     app.include_router(query_router)
 
     return app
+

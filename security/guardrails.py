@@ -47,25 +47,25 @@ _DEFAULT_WRITE_PATTERNS = [
 
 
 class GuardrailsPipeline:
-    """
-    StitchGuard 6-Layer Security & Data Governance Pipeline.
+    """The 6-layer security system that keeps questions, database queries, and answers safe.
 
-    Enforces:
-      Layer 1: Input Gate (Length limit, injection scanning, input PII masking, write intent refusal, raw SQL refusal)
-      Layer 2: Intent Scope & Policy Validation
-      Layer 3: SQL Compile-Time Domain Scope
-      Layer 4: SQL Structural Execution Security (SELECT only, no multi-statements, banned keywords/schemas)
-      Layer 5: Database Output Data Redaction (Column dropping & value masking)
-      Layer 6: LLM Output Content Safety (Output PII redaction, forbidden phrase filtering, internal term scrubbing)
+    Attributes:
+        config_path (str): File path to the security configuration file.
+        config (Dict[str, Any]): Loaded security settings.
     """
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        """Set up the GuardrailsPipeline security system.
+
+        Args:
+            config_path (Optional[str], optional): Path to guardrails.yml config file. Defaults to None.
+        """
         self.config_path = config_path or os.path.join(PROMPTS_DIR, "config", "guardrails.yml")
         self.config: Dict[str, Any] = {}
         self.reload()
 
     def reload(self) -> None:
-        """Reload guardrails.yml and re-compile all regex patterns in memory."""
+        """Reload the security settings file and update all search rules."""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 self.config = yaml.safe_load(f) or {}
@@ -77,7 +77,7 @@ class GuardrailsPipeline:
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
-        """Pre-compile all regex patterns from config for performance."""
+        """Prepare all text search patterns for fast safety checking."""
         # 1. Jailbreak Patterns
         jb_patterns = self.config.get("input_safety", {}).get("jailbreak_patterns", [])
         self._jailbreak_patterns = [re.compile(pat, re.IGNORECASE) for pat in jb_patterns]
@@ -124,7 +124,14 @@ class GuardrailsPipeline:
 
     # ── LAYER 1: Input Gate ──────────────────────────────────────────────────
     def run_layer_1(self, user_question: str) -> Dict[str, Any]:
-        """Layer 1 Input Validation (Length, jailbreak, PII, write intent, raw SQL)."""
+        """Check if the user's question is safe, hides personal data, and blocks write attempts.
+
+        Args:
+            user_question (str): The question typed by the user.
+
+        Returns:
+            Dict[str, Any]: Security results containing `is_safe`, `redacted_question`, `detected_pii`, `has_write`, `has_raw_sql`, `unsafe_reason`.
+        """
         max_chars = self.config.get("input_safety", {}).get("max_characters", 1000)
 
         if len(user_question) > max_chars:
@@ -193,11 +200,27 @@ class GuardrailsPipeline:
         }
 
     async def run_layer_1_async(self, user_question: str) -> Dict[str, Any]:
-        """Async runner for Layer 1 checks."""
+        """Async wrapper to check if the user's question is safe.
+
+        Args:
+            user_question (str): The question typed by the user.
+
+        Returns:
+            Dict[str, Any]: Security results dictionary.
+        """
         return self.run_layer_1(user_question)
 
     # ── LAYER 2: Intent Policy ───────────────────────────────────────────────
     def run_layer_2(self, intent: str, question: str) -> Dict[str, Any]:
+        """Check if the question category is valid.
+
+        Args:
+            intent (str): The question category name.
+            question (str): The question typed by the user.
+
+        Returns:
+            Dict[str, Any]: Validation results with `is_valid`, `intent`, and `reason`.
+        """
         valid_intents = {"GENERAL", "WMS_AGENT"}
         if intent not in valid_intents:
             return {"is_valid": False, "intent": intent, "reason": f"Unknown intent '{intent}'"}
@@ -205,6 +228,15 @@ class GuardrailsPipeline:
 
     # ── LAYER 3: SQL Compile-Time Domain Scope ───────────────────────────────
     def run_layer_3(self, sql_query: str, intent: str) -> Dict[str, Any]:
+        """Check if the SQL query only uses database tables allowed for this question category.
+
+        Args:
+            sql_query (str): The generated SQL query string.
+            intent (str): The question category name.
+
+        Returns:
+            Dict[str, Any]: Results with `is_allowed`, `queried_tables`, and `reason`.
+        """
         if not sql_query:
             return {"is_allowed": True, "queried_tables": [], "reason": None}
 
@@ -229,6 +261,14 @@ class GuardrailsPipeline:
 
     # ── LAYER 4: SQL Execution Security Filter ───────────────────────────────
     def run_layer_4(self, sql_query: str) -> Dict[str, Any]:
+        """Check if the SQL query is strictly read-only and safe to run.
+
+        Args:
+            sql_query (str): The SQL query string to check.
+
+        Returns:
+            Dict[str, Any]: Safety results with `is_safe` and `reason`.
+        """
         if not sql_query:
             return {"is_safe": False, "reason": "Query is empty."}
 
@@ -258,6 +298,14 @@ class GuardrailsPipeline:
 
     # ── LAYER 5: Output Data Redaction ───────────────────────────────────────
     def run_layer_5(self, db_output: str) -> Dict[str, Any]:
+        """Remove sensitive personal columns from database search results.
+
+        Args:
+            db_output (str): Raw text results returned by the database.
+
+        Returns:
+            Dict[str, Any]: Results with `redacted_output` and `redacted_columns`.
+        """
         if not db_output or db_output.startswith("Error") or db_output == "No rows returned.":
             return {"redacted_output": db_output, "redacted_columns": []}
 
@@ -306,6 +354,15 @@ class GuardrailsPipeline:
 
     # ── LAYER 6: LLM Output Content Safety ───────────────────────────────────
     def run_layer_6(self, natural_answer: str, sql_used: Optional[str] = None) -> Dict[str, Any]:
+        """Clean the final AI response to remove personal details and keep it under character limits.
+
+        Args:
+            natural_answer (str): The natural language response string.
+            sql_used (Optional[str], optional): The SQL query that was run. Defaults to None.
+
+        Returns:
+            Dict[str, Any]: Results with `sanitized_answer` and `modifications` list.
+        """
         if not natural_answer:
             return {"sanitized_answer": natural_answer, "modifications": []}
 
@@ -344,20 +401,45 @@ guardrails = GuardrailsPipeline()
 
 # Global helper functions
 def reload_guardrails_config() -> None:
+    """Reload security guardrails YAML configuration file."""
     guardrails.reload()
 
 
 def is_safe_prompt(user_question: str) -> bool:
+    """Check if the user's question passes basic security and contains no write commands.
+
+    Args:
+        user_question (str): The question typed by the user.
+
+    Returns:
+        bool: True if safe to process, False if unsafe.
+    """
     l1 = guardrails.run_layer_1(user_question)
     return l1["is_safe"] and not l1["has_write"] and not l1["has_raw_sql"]
 
 
 def redact_pii_from_input(user_question: str) -> tuple[str, list[str]]:
+    """Hide personal info (emails, phone numbers) inside the user's question.
+
+    Args:
+        user_question (str): The user's input question.
+
+    Returns:
+        tuple[str, list[str]]: A tuple containing the redacted question string and detected PII labels.
+    """
     l1 = guardrails.run_layer_1(user_question)
     return l1["redacted_question"], l1["detected_pii"]
 
 
 def get_pii_reassurance_message(detected_labels: list[str] = None) -> str:
+    """Build a friendly message informing the user that sensitive info was safely hidden.
+
+    Args:
+        detected_labels (list[str], optional): List of hidden PII types. Defaults to None.
+
+    Returns:
+        str: Reassurance notice text.
+    """
     labels_str = ", ".join(detected_labels) if detected_labels else "sensitive data"
     return (
         f"Please do not share your sensitive personal data ({labels_str}). "
@@ -366,16 +448,40 @@ def get_pii_reassurance_message(detected_labels: list[str] = None) -> str:
 
 
 def has_raw_sql_intent(user_question: str) -> tuple[bool, Optional[str]]:
+    """Check if the user typed raw SQL code directly instead of a question.
+
+    Args:
+        user_question (str): The user's question.
+
+    Returns:
+        tuple[bool, Optional[str]]: True if raw SQL detected and refusal message string.
+    """
     l1 = guardrails.run_layer_1(user_question)
     return l1["has_raw_sql"], l1["raw_sql_reason"]
 
 
 def has_write_intent(user_question: str) -> tuple[bool, Optional[str]]:
+    """Check if the user is trying to add, edit, or delete database data.
+
+    Args:
+        user_question (str): The user's question.
+
+    Returns:
+        tuple[bool, Optional[str]]: True if write intent detected and refusal message string.
+    """
     l1 = guardrails.run_layer_1(user_question)
     return l1["has_write"], l1["write_reason"]
 
 
 def is_db_error(db_output: str) -> bool:
+    """Check if the database output string is an error message.
+
+    Args:
+        db_output (str): Database execution output text.
+
+    Returns:
+        bool: True if output is an error, False otherwise.
+    """
     if not db_output:
         return False
     return (
@@ -386,16 +492,41 @@ def is_db_error(db_output: str) -> bool:
 
 
 def extract_tables_from_sql(sql: str) -> list[str]:
+    """Find and return all table names used in a SQL query.
+
+    Args:
+        sql (str): The SQL SELECT query string.
+
+    Returns:
+        list[str]: A list of table name strings found in FROM and JOIN clauses.
+    """
     l3 = guardrails.run_layer_3(sql, "WMS_AGENT")
     return l3.get("queried_tables", [])
 
 
 def validate_sql_domain_scope(sql_query: str, intent: str) -> tuple[bool, Optional[str]]:
+    """Check if a SQL query stays within the allowed database tables for a topic.
+
+    Args:
+        sql_query (str): The SQL query string.
+        intent (str): The topic category.
+
+    Returns:
+        tuple[bool, Optional[str]]: True if allowed, and refusal reason string if blocked.
+    """
     l3 = guardrails.run_layer_3(sql_query, intent)
     return l3["is_allowed"], l3["reason"]
 
 
 def is_safe_sql_query(sql_query: str) -> tuple[bool, Optional[str]]:
+    """Check if a SQL query is read-only and free of dangerous commands.
+
+    Args:
+        sql_query (str): The SQL query string.
+
+    Returns:
+        tuple[bool, Optional[str]]: True if safe, and error reason string if unsafe.
+    """
     l4 = guardrails.run_layer_4(sql_query)
     return l4["is_safe"], l4["reason"]
 
@@ -404,6 +535,15 @@ def validate_sql_before_execution(
     sql_query: str,
     intent: str | None = None,
 ) -> tuple[bool, str | None]:
+    """Check both domain table permission and read-only safety before running a SQL query.
+
+    Args:
+        sql_query (str): The SQL query to check.
+        intent (str | None, optional): The topic category. Defaults to None.
+
+    Returns:
+        tuple[bool, str | None]: True if query passes all security checks, False and error message if invalid.
+    """
     if intent:
         is_allowed, scope_err = validate_sql_domain_scope(sql_query, intent)
         if not is_allowed:
@@ -412,10 +552,27 @@ def validate_sql_before_execution(
 
 
 def redact_db_output_string(db_output: str) -> str:
+    """Remove sensitive columns from raw database search results.
+
+    Args:
+        db_output (str): Raw text results from the database.
+
+    Returns:
+        str: Redacted output text string.
+    """
     l5 = guardrails.run_layer_5(db_output)
     return l5["redacted_output"]
 
 
 def sanitize_output(natural_answer: str, sql_used: Optional[str] = None) -> str:
+    """Clean the final AI response to remove personal details and enforce length limits.
+
+    Args:
+        natural_answer (str): The response text to clean.
+        sql_used (Optional[str], optional): The SQL query that was run. Defaults to None.
+
+    Returns:
+        str: Sanitized response text.
+    """
     l6 = guardrails.run_layer_6(natural_answer, sql_used)
     return l6["sanitized_answer"]

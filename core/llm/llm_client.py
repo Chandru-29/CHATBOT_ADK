@@ -1,42 +1,99 @@
 """
-llm_client.py — Google Gemini API Client Wrapper using google-genai SDK with Tenacity retries.
+llm_client.py — Gemini 2.5 Flash LLM API Client Wrapper with Tenacity retries.
 
-Every module that needs to ask Gemini a question calls ask_llm() or ask_llm_async() from here.
+Every module that needs to ask LLM a question calls ask_llm() or ask_llm_async() from here.
 Includes resilience retries for network/API rate-limit disruptions.
+
+Rate-limit protection is applied via llm_throttle.acquire_llm_slot() / release_llm_slot()
+so that concurrent callers are queued instead of flooding the LLM API.
 """
 
-# ── MODULE TAG: Google Gemini LLM Client ──
+# ── MODULE TAG: Gemini LLM Client ──
 import os
 import logging
-from google import genai
-from google.genai import types
+from openai import OpenAI, AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
-from core.config.settings import GEMINI_API_KEY, GEMINI_MODEL
+from core.config.settings import GEMINI_API_KEY, GEMINI_MODEL, MODEL_NAME
 from core.config.logger import get_logger
+from core.llm.llm_throttle import llm_slot
 
 log = get_logger(__name__)
 
-# Single shared persistent Gemini client
-_client: genai.Client | None = None
+# Shared persistent LLM clients
+_client: OpenAI | None = None
+_async_client: AsyncOpenAI | None = None
 
 
-def get_genai_client() -> genai.Client:
-    """Return the shared persistent Google GenAI Client instance."""
+def get_llm_client() -> OpenAI:
+    """Get the shared synchronous connection to the Gemini AI model.
+
+    Returns:
+        OpenAI: The active Gemini AI connection client.
+    """
     global _client
     if _client is None:
-        api_key = GEMINI_API_KEY or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_KEY")
+        api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            log.warning("GEMINI_API_KEY not found in environment. Using placeholder key 'MOCK_GEMINI_API_KEY'. Please set GEMINI_API_KEY in .env")
+            log.warning("GEMINI_API_KEY not found in environment. Please set GEMINI_API_KEY in .env")
             api_key = "MOCK_GEMINI_API_KEY"
-        _client = genai.Client(api_key=api_key)
+        log.info(f"LLMClient: Initializing Gemini 2.5 Flash client (model={MODEL_NAME})")
+        _client = OpenAI(api_key=api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
     return _client
 
 
-# Backwards compatibility helper
-def get_async_client() -> genai.Client:
-    """Return the shared persistent GenAI client (supports .aio for async calls)."""
-    return get_genai_client()
+def get_llm_async_client() -> AsyncOpenAI:
+    """Get the shared asynchronous connection to the Gemini AI model.
+
+    Returns:
+        AsyncOpenAI: The active async Gemini AI connection client.
+    """
+    global _async_client
+    if _async_client is None:
+        api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            log.warning("GEMINI_API_KEY not found in environment. Please set GEMINI_API_KEY in .env")
+            api_key = "MOCK_GEMINI_API_KEY"
+        log.info(f"LLMClient: Initializing Async Gemini 2.5 Flash client (model={MODEL_NAME})")
+        _async_client = AsyncOpenAI(api_key=api_key, base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    return _async_client
+
+
+# Backwards compatibility aliases
+def get_groq_client() -> OpenAI:
+    """Old helper alias to get the shared Gemini client.
+
+    Returns:
+        OpenAI: The shared Gemini client.
+    """
+    return get_llm_client()
+
+
+def get_groq_async_client() -> AsyncOpenAI:
+    """Old helper alias to get the shared async Gemini client.
+
+    Returns:
+        AsyncOpenAI: The shared async Gemini client.
+    """
+    return get_llm_async_client()
+
+
+def get_genai_client() -> OpenAI:
+    """Old helper alias to get the shared Gemini client.
+
+    Returns:
+        OpenAI: The shared Gemini client.
+    """
+    return get_llm_client()
+
+
+def get_async_client() -> AsyncOpenAI:
+    """Old helper alias to get the shared async Gemini client.
+
+    Returns:
+        AsyncOpenAI: The shared async Gemini client.
+    """
+    return get_llm_async_client()
 
 
 @retry(
@@ -45,19 +102,32 @@ def get_async_client() -> genai.Client:
     before_sleep=before_sleep_log(log, logging.WARNING),
     reraise=True,
 )
-def _generate_with_retry(model: str, system_prompt: str, user_msg: str, max_tokens: int, temperature: float = 0.0):
-    """Execute synchronous client.models.generate_content with Tenacity exponential retries."""
-    client = get_genai_client()
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt if system_prompt else None,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
-    )
-    return client.models.generate_content(
+def _generate_with_retry(model: str, system_prompt: str, user_msg: str, max_tokens: int, temperature: float = 0.0) -> str:
+    """Send a message to the Gemini AI model and automatically retry if the network fails.
+
+    Args:
+        model (str): Name of the Gemini model.
+        system_prompt (str): Instructions and rules for the AI.
+        user_msg (str): The user's question or message.
+        max_tokens (int): Maximum answer length limit.
+        temperature (float, optional): Creativity level (0.0 for strict answers). Defaults to 0.0.
+
+    Returns:
+        str: The answer text generated by the AI model.
+    """
+    client = get_llm_client()
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_msg})
+
+    response = client.chat.completions.create(
         model=model,
-        contents=user_msg,
-        config=config,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
+    return (response.choices[0].message.content or "").strip()
 
 
 @retry(
@@ -66,38 +136,79 @@ def _generate_with_retry(model: str, system_prompt: str, user_msg: str, max_toke
     before_sleep=before_sleep_log(log, logging.WARNING),
     reraise=True,
 )
-async def _async_generate_with_retry(model: str, system_prompt: str, user_msg: str, max_tokens: int, temperature: float = 0.0):
-    """Execute async client.aio.models.generate_content with Tenacity exponential retries."""
-    client = get_genai_client()
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt if system_prompt else None,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
-    )
-    return await client.aio.models.generate_content(
+async def _async_generate_with_retry(model: str, system_prompt: str, user_msg: str, max_tokens: int, temperature: float = 0.0) -> str:
+    """Send an async message to Gemini AI and automatically retry if network errors happen.
+
+    Args:
+        model (str): Name of the Gemini model.
+        system_prompt (str): Instructions and rules for the AI.
+        user_msg (str): The user's question or message.
+        max_tokens (int): Maximum answer length limit.
+        temperature (float, optional): Creativity level (0.0 for strict answers). Defaults to 0.0.
+
+    Returns:
+        str: The answer text generated by the AI model.
+    """
+    client = get_llm_async_client()
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_msg})
+
+    response = await client.chat.completions.create(
         model=model,
-        contents=user_msg,
-        config=config,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
+    return (response.choices[0].message.content or "").strip()
 
 
 def ask_llm(system_prompt: str, user_msg: str, model_name: str = None, max_tokens: int = 1024, temperature: float = 0.0) -> str:
-    """Send a message to Google Gemini API with automatic retries and return reply text."""
-    model = model_name or GEMINI_MODEL
+    """Ask the Gemini AI model a question synchronously and return its text answer.
+
+    Args:
+        system_prompt (str): System instructions for the AI.
+        user_msg (str): The question or message for the AI.
+        model_name (str, optional): Target Gemini model name. Defaults to None.
+        max_tokens (int, optional): Maximum answer length limit. Defaults to 1024.
+        temperature (float, optional): Creativity level. Defaults to 0.0.
+
+    Returns:
+        str: The text answer from the AI model.
+
+    Raises:
+        RuntimeError: Raised if the AI call fails even after multiple automatic retries.
+    """
+    model = model_name or GEMINI_MODEL or MODEL_NAME
     try:
-        resp = _generate_with_retry(model, system_prompt, user_msg, max_tokens, temperature)
-        return (resp.text or "").strip()
+        return _generate_with_retry(model, system_prompt, user_msg, max_tokens, temperature)
     except Exception as e:
-        log.error(f"Gemini API sync call failed after retries: {e}")
-        raise RuntimeError(f"Error calling Google Gemini API ({model}): {e}")
+        log.error(f"Gemini API sync call failed after retries ({model}): {e}")
+        raise RuntimeError(f"Error calling Gemini API ({model}): {e}")
 
 
 async def ask_llm_async(system_prompt: str, user_msg: str, model_name: str = None, max_tokens: int = 1024, temperature: float = 0.0) -> str:
-    """Asynchronously send a message to Google Gemini API with automatic retries and return reply text."""
-    model = model_name or GEMINI_MODEL
-    try:
-        resp = await _async_generate_with_retry(model, system_prompt, user_msg, max_tokens, temperature)
-        return (resp.text or "").strip()
-    except Exception as e:
-        log.error(f"Gemini API async call failed after retries: {e}")
-        raise RuntimeError(f"Error calling Google Gemini API async ({model}): {e}")
+    """Ask the Gemini AI model a question asynchronously, waiting safely for an open rate-limit slot.
+
+    Args:
+        system_prompt (str): System instructions for the AI.
+        user_msg (str): The question or message for the AI.
+        model_name (str, optional): Target Gemini model name. Defaults to None.
+        max_tokens (int, optional): Maximum answer length limit. Defaults to 1024.
+        temperature (float, optional): Creativity level. Defaults to 0.0.
+
+    Returns:
+        str: The text answer from the AI model.
+
+    Raises:
+        RuntimeError: Raised if the AI call fails even after multiple automatic retries.
+    """
+    model = model_name or GEMINI_MODEL or MODEL_NAME
+    async with llm_slot():
+        try:
+            return await _async_generate_with_retry(model, system_prompt, user_msg, max_tokens, temperature)
+        except Exception as e:
+            log.error(f"Gemini API async call failed after retries ({model}): {e}")
+            raise RuntimeError(f"Error calling Gemini API async ({model}): {e}")
+

@@ -1,15 +1,13 @@
 """
-tool.py — ADK Tool Abstraction for Google Gemini API Function Calling.
+tool.py — ADK Tool Abstraction.
 
-Wraps Python functions into Gemini-compatible tool objects (types.Tool)
-and manages execution with error handling.
+Wraps Python functions into reusable ADK tool objects and manages execution with error handling.
 """
 
 # ── MODULE TAG: ADK Tool Management ──
 import inspect
 from typing import Callable, Any, Dict
 from pydantic import BaseModel
-from google.genai import types
 
 from core.config.logger import get_logger
 
@@ -17,9 +15,13 @@ log = get_logger(__name__)
 
 
 class ADKTool:
-    """
-    Encapsulates a Python tool function with name, description, parameters,
-    and Gemini API FunctionDeclaration representation.
+    """Encapsulates a Python tool function with name, description, and execution capabilities.
+
+    Attributes:
+        name (str): Unique tool identifier.
+        description (str): Functional tool description.
+        func (Callable): Encapsulated Python function or coroutine.
+        parameters_schema (type[BaseModel] | None): Optional Pydantic schema model.
     """
 
     def __init__(
@@ -28,24 +30,29 @@ class ADKTool:
         description: str,
         func: Callable,
         parameters_schema: type[BaseModel] | None = None,
-    ):
+    ) -> None:
+        """Initialize ADKTool instance.
+
+        Args:
+            name (str): Tool identifier string.
+            description (str): Tool description string.
+            func (Callable): Target function or coroutine.
+            parameters_schema (type[BaseModel] | None, optional): Pydantic parameter schema class. Defaults to None.
+        """
         self.name = name
         self.description = description
         self.func = func
         self.parameters_schema = parameters_schema
 
-    def to_gemini_tool(self) -> types.Tool:
-        """Convert this ADK Tool into a Google GenAI types.Tool instance."""
-        if hasattr(types, "FunctionDeclaration"):
-            fn_decl = types.FunctionDeclaration(
-                name=self.name,
-                description=self.description,
-            )
-            return types.Tool(function_declarations=[fn_decl])
-        return types.Tool(function_declarations=[self.func])
-
     async def execute_async(self, **kwargs) -> Any:
-        """Execute the encapsulated tool function asynchronously."""
+        """Execute the encapsulated tool function asynchronously with error handling.
+
+        Args:
+            **kwargs: Keyword arguments passed directly to the target function.
+
+        Returns:
+            Any: Tool execution result object or error string.
+        """
         try:
             if inspect.iscoroutinefunction(self.func):
                 return await self.func(**kwargs)

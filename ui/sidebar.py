@@ -28,7 +28,7 @@ def render_sidebar() -> None:
     with st.sidebar:
         # ── CAPTION & MAIN TITLE PANEL ────────────────────────────────────────────────
         st.markdown("###  CHATBOT")
-        st.caption(f"Powered by Google Gemini `{GEMINI_MODEL}` + MySQL")
+        st.caption(f"Powered by Gemini `{GEMINI_MODEL}` + MySQL")
         st.divider()
 
         # ── BACKEND SERVICE STATUS CHECKS ──────────────────────────────────────────────

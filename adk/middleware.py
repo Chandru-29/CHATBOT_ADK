@@ -37,16 +37,27 @@ log = get_logger(__name__)
 
 
 class ADKMiddleware:
-    """
-    Standardized ADK Security & Auditing Middleware Manager.
+    """Standardized ADK Security & Auditing Middleware Manager.
+
+    Integrates Layer 1-6 StitchGuard security hooks, PII redaction, cache checking,
+    and output sanitization into the pipeline lifecycle.
     """
 
     @staticmethod
     async def process_l1_input(question: str) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Layer 1 Input Guardrail Hook.
-        Checks for prompt injection, raw SQL input, write intents, and redacts PII.
-        Returns: (is_pass, cleaned_question_or_refusal, l1_metadata)
+        """Run Layer 1 Input Guardrail checks for prompt injection, raw SQL input, and PII.
+
+        Args:
+            question (str): Raw input user question string.
+
+        Returns:
+            Tuple[bool, str, Dict[str, Any]]: A tuple containing:
+                - bool: True if safe to proceed, False if security rule intercepted.
+                - str: Cleaned/redacted question string or security refusal message.
+                - Dict[str, Any]: Layer 1 metadata dict containing PII flags and latency metrics.
+
+        Raises:
+            HTTPException: If prompt injection or severe malicious payload is detected.
         """
         t0 = time.perf_counter()
         l1_res = await guardrails.run_layer_1_async(question)
@@ -82,37 +93,58 @@ class ADKMiddleware:
         return True, redacted_q, metadata
 
     @staticmethod
-    def check_l2_cache(question: str, is_follow_up: bool) -> Tuple[bool, Optional[Any], str]:
+    async def check_l2_cache(question: str, is_follow_up: bool) -> Tuple[bool, Optional[Any], str]:
+        """Run Layer 2 Cache Interceptor check against local TTLCache and Redis stores.
+
+        Args:
+            question (str): Cleaned user question string.
+            is_follow_up (bool): True if question is a multi-turn follow-up query.
+
+        Returns:
+            Tuple[bool, Optional[Any], str]: A tuple containing:
+                - bool: True if cache hit occurred, False on cache miss.
+                - Optional[Any]: Cached response payload object or dict.
+                - str: Cache hit source label (`"EXACT"`, `"SEMANTIC"`, or `"NONE"`).
         """
-        Layer 2 Cache Interceptor Hook.
-        Checks response and SQL cache for exact/semantic hit.
-        Returns: (is_hit, cached_payload, hit_source)
-        """
-        hit, source = lookup_cache(question, is_follow_up)
+        hit, source = await lookup_cache(question, is_follow_up)
         return bool(hit), hit, source
 
     @staticmethod
     def validate_l3_l4_sql(sql_query: str, intent: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-        """
-        Layer 3/4 Pre-Execution SQL Hook.
-        Enforces table scope and blocks write queries (INSERT, UPDATE, DELETE, DROP, ALTER).
-        Returns: (is_valid, error_message)
+        """Run Layer 3/4 Pre-Execution SQL validation guardrails.
+
+        Args:
+            sql_query (str): Generated SQL SELECT statement to validate.
+            intent (Optional[str], optional): Classified domain intent string. Defaults to None.
+
+        Returns:
+            Tuple[bool, Optional[str]]: A tuple containing:
+                - bool: True if query passes all table scope and read-only checks, False otherwise.
+                - Optional[str]: Error refusal message if invalid, or None if valid.
         """
         return validate_sql_before_execution(sql_query, intent)
 
     @staticmethod
     def redact_l5_output(db_output: str) -> str:
-        """
-        Layer 5 DB Output Hook.
-        Redacts sensitive columns (passwords, tokens, PII) from SQL execution outputs.
+        """Run Layer 5 Database Output Redaction hook.
+
+        Args:
+            db_output (str): Raw text output string from database query execution.
+
+        Returns:
+            str: Output string with sensitive columns (passwords, tokens, PII) redacted.
         """
         return redact_db_output_string(db_output)
 
     @staticmethod
     def sanitize_l6_output(result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Layer 6 Response Sanitizer Hook.
-        Sanitizes natural language answer for LLM hallucinations or unauthorized data leaks.
+        """Run Layer 6 Response Sanitizer hook on natural language answers.
+
+        Args:
+            result (Dict[str, Any]): Execution response payload dictionary.
+
+        Returns:
+            Dict[str, Any]: Payload dictionary with sanitized `natural_answer` string.
         """
         if isinstance(result, dict) and result.get("natural_answer"):
             result["natural_answer"] = sanitize_output(

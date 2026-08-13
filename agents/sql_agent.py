@@ -14,8 +14,7 @@ from collections import defaultdict
 from typing import AsyncGenerator
 from mcp import ClientSession
 
-from google.genai import types
-from core.llm.llm_client import get_async_client
+from core.llm.llm_client import get_llm_async_client, get_async_client
 from core.config.settings import MODEL_NAME, AGENT_MAX_STEPS
 from core.config.logger import get_logger
 from security.guardrails import (
@@ -29,14 +28,18 @@ from security.guardrails import (
 log = get_logger(__name__)
 
 # Shared async client — single connection pool, imported from llm_client
-_async_client = get_async_client()
+_async_client = get_llm_async_client()
 
 # ── Step-count tracker ────────────────────────────────────────────────────────
 _step_counts: dict[int, int] = defaultdict(int)
 
 
 def get_step_counts() -> dict[int, int]:
-    """Return how many requests finished in each step count (1–5)."""
+    """Get statistics on how many reasoning steps (1 to 5) were used to answer questions.
+
+    Returns:
+        dict[int, int]: A dictionary mapping step numbers to total question counts.
+    """
     return dict(_step_counts)
 
 
@@ -49,9 +52,19 @@ async def _execute_validated_sql(
     tool_name: str = "execute_read_only_query",
     tool_args: dict | None = None,
 ) -> tuple[str, bool]:
-    """
-    Run Layer 3/4 validation, execute query via MCP session tool, and redact Layer 5 sensitive output.
-    Returns (db_output_string, was_skipped_due_to_validation_error).
+    """Check SQL query safety, run it on the database, and remove any sensitive data.
+
+    Args:
+        session (ClientSession): Connection session to the database tool.
+        sql_query (str): The SELECT SQL query string to run.
+        intent (str | None, optional): Category of question. Defaults to None.
+        tool_name (str, optional): Database tool name. Defaults to "execute_read_only_query".
+        tool_args (dict | None, optional): Arguments to pass to the tool. Defaults to None.
+
+    Returns:
+        tuple[str, bool]: A tuple containing:
+            - str: The clean database result text or error message.
+            - bool: True if the query failed safety checks and was skipped, False otherwise.
     """
     is_valid, guard_err = validate_sql_before_execution(sql_query, intent)
     if not is_valid:
@@ -69,15 +82,71 @@ async def _execute_validated_sql(
     return redact_db_output_string(db_output), False
 
 
+def build_compact_history_summary(
+    used_sql: str | None,
+    db_output: str | None = None,
+    rows: list | None = None,
+    columns: list | None = None,
+    error: str | None = None,
+) -> str:
+    """Create a short, compact summary of the SQL query and its results for chat memory.
+
+    Args:
+        used_sql (str | None): The executed SQL query string.
+        db_output (str | None, optional): Raw database text output. Defaults to None.
+        rows (list | None, optional): List of data rows returned. Defaults to None.
+        columns (list | None, optional): List of column names returned. Defaults to None.
+        error (str | None, optional): Error message if the query failed. Defaults to None.
+
+    Returns:
+        str: A short summary tag string (e.g. `[EXECUTED_SQL: ... | RESULT: 3 rows returned (Samples: IT001)]`).
+    """
+    if not used_sql:
+        return ""
+
+    if error or (db_output and db_output.startswith("Error")):
+        err_msg = error or db_output
+        err_msg = " ".join(str(err_msg).split())
+        return f"[EXECUTED_SQL: {used_sql} | ERROR: {err_msg}]"
+
+    if rows is None and db_output:
+        parsed_cols, parsed_rows = parse_db_result(db_output)
+        rows = parsed_rows
+        columns = columns or parsed_cols
+
+    rows = rows or []
+    row_count = len(rows)
+
+    if row_count == 0:
+        return f"[EXECUTED_SQL: {used_sql} | RESULT: 0 rows returned]"
+
+    samples = [str(r[0]) for r in rows[:3] if r and r[0] is not None]
+    samples_str = f" (Samples: {', '.join(samples)})" if samples else ""
+    return f"[EXECUTED_SQL: {used_sql} | RESULT: {row_count} rows returned{samples_str}]"
+
+
 def _build_result(
     used_sql: str | None,
     final_answer: str | None,
     attempts: int,
     agent_name: str,
     error: str | None = None,
+    history_summary: str | None = None,
 ) -> dict:
-    """Construct standard output dictionary payload."""
-    return {
+    """Build the standard answer payload dictionary to return to the user.
+
+    Args:
+        used_sql (str | None): The SQL query that was run (if any).
+        final_answer (str | None): The natural language answer for display.
+        attempts (int): Number of steps taken to get the answer.
+        agent_name (str): Name of the agent that answered.
+        error (str | None, optional): Error message if something went wrong. Defaults to None.
+        history_summary (str | None, optional): Short chat history summary tag. Defaults to None.
+
+    Returns:
+        dict: A dictionary containing `sql`, `columns`, `rows`, `natural_answer`, `error`, `attempts`, `agent_name`.
+    """
+    res = {
         "sql":            used_sql,
         "columns":        [],
         "rows":           [],
@@ -86,6 +155,9 @@ def _build_result(
         "attempts":       attempts,
         "agent_name":     agent_name,
     }
+    if history_summary:
+        res["history_summary"] = history_summary
+    return res
 
 
 def _record_cache_and_steps(
@@ -98,23 +170,46 @@ def _record_cache_and_steps(
     api_cache: dict,
     step: int,
 ) -> None:
-    """Record metrics step count and update backend API cache."""
+    """Update execution metrics and cache query results in API and Redis stores.
+
+    Args:
+        result (dict): Agent result dictionary payload.
+        used_sql (str | None): Executed SQL query statement.
+        intent (str | None): Domain intent classification label.
+        agent_name (str): Display name of the agent.
+        question (str): Original user input question.
+        cache_key (str): Unique cache key identifier.
+        api_cache (dict): In-memory API response cache mapping dict.
+        step (int): Current reasoning loop step index (0-indexed).
+    """
+    from core.cache.cache_manager import store_cache
     if used_sql:
-        api_cache[cache_key] = {
-            "sql":        used_sql,
-            "intent":     intent,
-            "agent_name": agent_name,
-            "question":   question,
+        entry = {
+            "sql":             used_sql,
+            "intent":          intent,
+            "agent_name":      agent_name,
+            "question":        question,
+            "history_summary": result.get("history_summary") or build_compact_history_summary(used_sql),
         }
+        api_cache[cache_key] = entry
+        store_cache(question, entry)
     else:
         api_cache[cache_key] = result
+        store_cache(question, result)
     _step_counts[step + 1] += 1
 
 
 # ── Text Parsing Helpers ───────────────────────────────────────────────────────
 
 def find_json_in_llm_text(text: str) -> dict | None:
-    """Scan raw text for a JSON block containing "name": "run_select_query"."""
+    """Scan unformatted text for a JSON payload calling `run_select_query`.
+
+    Args:
+        text (str): Raw model completion text output string.
+
+    Returns:
+        dict | None: Parsed JSON tool call dictionary if found, or None if invalid.
+    """
     depth = 0
     start = -1
     for i, ch in enumerate(text):
@@ -386,35 +481,34 @@ async def run_sql_agent(
         log.debug(f"Agent Step {step + 1}")
 
         temp = 0.0 if step == 0 else 0.3
-        client = get_async_client()
+        client = get_llm_async_client()
 
-        # Build contents for Gemini SDK
-        system_instr = system_prompt
-        contents = []
+        # Build messages for LLM SDK
+        llm_messages = []
+        if system_prompt:
+            llm_messages.append({"role": "system", "content": system_prompt})
+
         for m in messages:
-            r = m.get("role")
+            r = m.get("role", "user")
             c = m.get("content", "")
             if r == "system":
-                system_instr = c
                 continue
-            role_name = "model" if r in ("bot", "assistant") else "user"
-            contents.append(types.Content(role=role_name, parts=[types.Part.from_text(text=str(c))]))
-
-        config = types.GenerateContentConfig(
-            system_instruction=system_instr if system_instr else None,
-            temperature=temp,
-        )
+            role_name = "assistant" if r in ("bot", "assistant", "model") else "user"
+            if r == "tool":
+                role_name = "user"
+                c = f"Tool Execution Result ({m.get('name', 'tool')}):\n{c}"
+            llm_messages.append({"role": role_name, "content": str(c)})
 
         try:
-            llm_reply = await client.aio.models.generate_content(
+            llm_reply = await client.chat.completions.create(
                 model=MODEL_NAME,
-                contents=contents,
-                config=config,
+                messages=llm_messages,
+                temperature=temp,
             )
-            raw_text = llm_reply.text or ""
+            raw_text = llm_reply.choices[0].message.content or ""
             assistant_msg = {"role": "assistant", "content": raw_text}
         except Exception as e:
-            log.error(f"Gemini generate_content error in sql_agent: {e}")
+            log.error(f"Gemini API call error in sql_agent: {e}")
             raw_text = ""
             assistant_msg = {"role": "assistant", "content": ""}
 
@@ -625,9 +719,8 @@ async def run_sql_agent(
                     }
                     return StreamingResponse(_token_gen(), media_type="text/event-stream", headers=headers)
 
-                final_answer = format_db_result_deterministic(db_output, question)
-                final_answer = re.sub(r'\n{3,}', '\n\n', final_answer or "")
-                result = _build_result(used_sql, final_answer, step + 1, agent_name)
+                hist_summary = build_compact_history_summary(used_sql, db_output)
+                result = _build_result(used_sql, final_answer, step + 1, agent_name, history_summary=hist_summary)
                 _record_cache_and_steps(result, used_sql, intent, agent_name, question, cache_key, api_cache, step)
                 log.info(f"SqlAgent: done in {step + 1} step(s) [deterministic] | agent={agent_name}")
                 return result

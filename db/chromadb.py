@@ -49,22 +49,50 @@ except Exception as e:
 
 
 def get_chroma_client() -> chromadb.PersistentClient:
-    """Return the active persistent ChromaDB client instance."""
+    """Get the active local vector database client.
+
+    Returns:
+        chromadb.PersistentClient: The active local vector database client object.
+    """
     return chroma_client
 
 
 def get_table_schemas_collection():
-    """Return the 'table_schemas' Chroma collection."""
-    return table_schemas_collection
+    """Get the vector database folder that stores database table descriptions.
+
+    Returns:
+        Collection: The active table schema collection.
+    """
+    try:
+        return chroma_client.get_or_create_collection(
+            name="table_schemas",
+            metadata=_COLLECTION_METADATA
+        )
+    except Exception:
+        return table_schemas_collection
 
 
 def get_semantic_cache_collection():
-    """Return the 'semantic_cache' Chroma collection."""
-    return semantic_cache_collection
+    """Get the vector database folder that stores past answers for semantic caching.
+
+    Returns:
+        Collection: The active semantic cache collection.
+    """
+    try:
+        return chroma_client.get_or_create_collection(
+            name="semantic_cache",
+            metadata=_COLLECTION_METADATA
+        )
+    except Exception:
+        return semantic_cache_collection
 
 
 def reset_semantic_cache_collection():
-    """Delete and recreate the 'semantic_cache' collection to handle dimension changes or schema wipes."""
+    """Wipe and recreate the semantic cache folder in the local vector database.
+
+    Returns:
+        Collection: The fresh, empty semantic cache collection object.
+    """
     global semantic_cache_collection
     try:
         chroma_client.delete_collection("semantic_cache")
@@ -78,7 +106,11 @@ def reset_semantic_cache_collection():
 
 
 def reset_table_schemas_collection():
-    """Delete and recreate the 'table_schemas' collection to handle dimension changes."""
+    """Wipe and recreate the table schema folder in the local vector database.
+
+    Returns:
+        Collection: The fresh, empty table schema collection object.
+    """
     global table_schemas_collection
     try:
         chroma_client.delete_collection("table_schemas")

@@ -19,15 +19,15 @@
 
 The **WMS SQL Chatbot** is a production-grade, natural-language-to-SQL AI assistant purpose-built for a **Warehouse Management System (WMS)** database. Users type plain English questions ("How many picklists were completed today?") and receive formatted, data-backed answers without ever touching SQL.
 
-The system is built on a **custom local ADK (Agent Development Kit)** — a lightweight, in-process multi-agent orchestration framework modelled after Google's ADK pattern — layered on top of the **Google Gemini 2.5 Flash** LLM for SQL generation and the **MCP (Model Context Protocol)** server for safe, isolated SQL execution.
+The system is built on a **custom local ADK (Agent Development Kit)** — a lightweight, in-process multi-agent orchestration framework modelled after Google's ADK pattern — layered on top of the **Google Gemini 2.5 Flash (`gemini-2.5-flash`)** LLM for SQL generation and the **MCP (Model Context Protocol)** server for safe, isolated SQL execution.
 
 ### Core Capabilities
 
 | Capability | Implementation |
 |---|---|
-| Natural language → SQL | Gemini 2.5 Flash + multi-step reasoning loop |
+| Natural language → SQL | Gemini `gemini-2.5-flash` + multi-step reasoning loop |
 | Intent routing (ZERO LLM calls) | Local HuggingFace `all-MiniLM-L6-v2` cosine similarity |
-| Schema grounding | VectorRAG via ChromaDB + `text-embedding-004` |
+| Schema grounding | VectorRAG via ChromaDB + local `sentence-transformers` |
 | Semantic caching | ChromaDB-backed similarity cache (cosine >= 0.99) |
 | 6-layer security | StitchGuard pipeline (PII, jailbreak, write, SQL scope, output redaction) |
 | Streaming responses | FastAPI `StreamingResponse` + SSE |
@@ -39,8 +39,8 @@ The system is built on a **custom local ADK (Agent Development Kit)** — a ligh
 |---|---|---|
 | **Backend API** | FastAPI | Async, uvicorn ASGI |
 | **Frontend UI** | Streamlit | Multi-panel chat interface |
-| **LLM** | Google Gemini 2.5 Flash | Via `google-genai` SDK |
-| **Embeddings** | Gemini `text-embedding-004` | Fallback: trigram hash vectors |
+| **LLM** | Google Gemini (`gemini-2.5-flash`) | Via OpenAI-compatible / GenAI client |
+| **Embeddings** | Local `sentence-transformers` (`all-MiniLM-L6-v2`) | Fallback: trigram hash vectors |
 | **Intent Classifier** | HuggingFace `sentence-transformers` (`all-MiniLM-L6-v2`) | Local, no LLM call |
 | **Vector Store** | ChromaDB | Persistent on-disk (`chroma_data/`) |
 | **SQL Execution** | MCP Server + SQLAlchemy | `mysql+pymysql` dialect |

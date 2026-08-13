@@ -29,12 +29,29 @@ _WMS_ALL_TABLES = [
 
 
 def _schema_key(include_tables=None):
-    """Hash key for the schema cache."""
+    """Generate a unique lookup key for saving database schema details in cache.
+
+    Args:
+        include_tables (Optional[Iterable[str]], optional): List of table names to include. Defaults to None.
+
+    Returns:
+        hashkey: A unique key object for cache lookups.
+    """
     return hashkey(frozenset(include_tables) if include_tables is not None else None)
 
 
 def _execute_api(sql: str) -> list[dict]:
-    """Execute a SQL query via the WMS HTTP API and return rows as list of dicts."""
+    """Send a SQL query to the database web service and return the rows as a list.
+
+    Args:
+        sql (str): The SELECT SQL query string to run.
+
+    Returns:
+        list[dict]: A list of row dictionaries containing the data.
+
+    Raises:
+        RuntimeError: Raised if the web request or response reading fails.
+    """
     try:
         resp = requests.post(
             _API_URL,
@@ -52,7 +69,17 @@ def _execute_api(sql: str) -> list[dict]:
 
 @cached(cache=_schema_cache, key=_schema_key)
 def get_schema(include_tables=None) -> str:
-    """Read table + column info from the WMS database via HTTP API and format for LLM prompt."""
+    """Fetch table names and column structures from the database to show to the AI.
+
+    Args:
+        include_tables (Optional[Iterable[str]], optional): Optional list of table names to filter. Defaults to None.
+
+    Returns:
+        str: A clean, formatted text summary of database tables and columns.
+
+    Raises:
+        RuntimeError: Raised if reading table structure fails.
+    """
     try:
         if include_tables is not None:
             target_tables = [t for t in _WMS_ALL_TABLES if t in include_tables]
@@ -96,18 +123,15 @@ def get_schema(include_tables=None) -> str:
         all_table_names = list(tables.keys())
 
         for table, cols in tables.items():
-            col_lines = []
+            col_specs = []
             for c in cols:
-                parts = [f"  {c['name']} {c['type']}"]
+                spec = f"{c['name']}:{c['type']}"
                 if not c["nullable"]:
-                    parts.append("NOT NULL")
-                col_lines.append(" ".join(parts))
+                    spec += " NOT NULL"
+                col_specs.append(spec)
 
             display_name = f"[{table}]" if table.lower() == "user" else table
-            schema_lines.append(
-                f"Table: {display_name}\n"
-                f"Columns:\n" + "\n".join(col_lines)
-            )
+            schema_lines.append(f"Table: {display_name}({', '.join(col_specs)})")
 
         total_count = len(_WMS_ALL_TABLES)
         header = (
@@ -129,6 +153,6 @@ def get_schema(include_tables=None) -> str:
 
 
 def clear_schema_cache() -> None:
-    """Clear all entries from the database schema cache."""
+    """Wipe saved database table structures from memory."""
     _schema_cache.clear()
     log.info("Schema: cache cleared.")
