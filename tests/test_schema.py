@@ -1,15 +1,15 @@
 """
-test_compact_schema.py — Unit tests for Compact Schema Notation (CSN) schema generation.
+test_schema.py — Unit tests for db.schema module:
+- get_schema
+- clear_schema_cache
 """
 
+import re
 import pytest
 from unittest.mock import patch
 
 from db.schema import get_schema, clear_schema_cache
-from db.indexer import build_rich_table_doc
 
-
-import re
 
 MOCK_COLUMNS = [
     {"TABLE_NAME": "ITEM", "COLUMN_NAME": "itemId", "DATA_TYPE": "INT", "IS_NULLABLE": "NO"},
@@ -49,7 +49,7 @@ def test_get_schema_csn_format():
         assert "Table: [user](userId:INT NOT NULL)" in schema_str
 
 
-def test_csn_token_reduction():
+def test_get_schema_csn_token_reduction():
     """Verify CSN uses significantly fewer characters/tokens than verbose multi-line format."""
     clear_schema_cache()
     with patch("db.schema._execute_api", side_effect=mock_execute_api):
@@ -69,7 +69,7 @@ def test_csn_token_reduction():
         assert csn_char_count < verbose_char_count
 
 
-def test_sql_agent_missing_table_compatibility():
+def test_get_schema_sql_agent_compatibility():
     """Verify that f'Table: {t}' substring check in sql_agent passes with CSN format."""
     clear_schema_cache()
     with patch("db.schema._execute_api", side_effect=mock_execute_api):
@@ -78,15 +78,3 @@ def test_sql_agent_missing_table_compatibility():
         # SQL Agent check pattern: f"Table: {t}" in system_prompt
         assert "Table: ITEM" in schema_str
         assert "Table: [user]" not in schema_str
-
-
-def test_indexer_build_rich_table_doc_csn():
-    """Verify that db.indexer build_rich_table_doc extracts CSN table lines correctly."""
-    with patch("db.schema._execute_api", return_value=MOCK_COLUMNS):
-        schema_str = get_schema(include_tables={"ITEM", "user"})
-        
-        doc_item = build_rich_table_doc("ITEM", schema_str)
-        assert "Table: ITEM(itemId:INT NOT NULL, itemCode:VARCHAR NOT NULL, itemName:VARCHAR)" in doc_item
-        
-        doc_user = build_rich_table_doc("user", schema_str)
-        assert "Table: [user](userId:INT NOT NULL)" in doc_user

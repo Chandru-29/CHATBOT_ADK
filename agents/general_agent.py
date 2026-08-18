@@ -80,7 +80,12 @@ def handle_general_chat(
         return intercepted
 
     general_desc = prompt_loader.get_agent_config("GENERAL").get("description", "")
-    return ask_llm(general_desc, question)
+    try:
+        return ask_llm(general_desc, question)
+    except Exception as e:
+        log.error(f"GeneralAgent sync execution error: {e}")
+        from core.llm.llm_client import format_llm_api_error
+        return format_llm_api_error(e)
 
 
 async def handle_general_chat_async(
@@ -103,4 +108,10 @@ async def handle_general_chat_async(
         return intercepted
 
     general_desc = prompt_loader.get_agent_config("GENERAL").get("description", "")
-    return await ask_llm_async(general_desc, question)
+    try:
+        return await ask_llm_async(general_desc, question)
+    except Exception as e:
+        log.error(f"GeneralAgent async execution error: {e}")
+        from core.llm.llm_client import format_llm_api_error
+        return format_llm_api_error(e)
+

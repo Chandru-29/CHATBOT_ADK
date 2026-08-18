@@ -30,6 +30,12 @@ class PromptLoader:
         self._examples     = self._load_yaml("examples.yml")
         log.info("PromptLoader: YAML prompt files loaded successfully.")
 
+        try:
+            from prompts.example_selector import example_selector
+            example_selector.precompute_embeddings(self._examples)
+        except Exception as e:
+            log.warning(f"PromptLoader: could not pre-compute exemplar embeddings: {e}")
+
     def reload(self) -> None:
         """Reload instructions.yml and examples.yml files into memory and clear caches."""
         self._instructions = self._load_yaml("instructions.yml")
@@ -38,8 +44,9 @@ class PromptLoader:
         try:
             from prompts.example_selector import example_selector
             example_selector.clear_cache()
+            example_selector.precompute_embeddings(self._examples, force_recompute=True)
         except Exception as e:
-            log.warning(f"PromptLoader: could not clear example_selector cache: {e}")
+            log.warning(f"PromptLoader: could not clear or pre-compute example_selector cache: {e}")
 
         log.info("PromptLoader: YAML prompt files reloaded successfully.")
 

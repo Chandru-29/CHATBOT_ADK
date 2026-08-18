@@ -42,7 +42,12 @@ try:
         metadata=_COLLECTION_METADATA
     )
 
-    log.info("ChromaDB: Successfully initialized 'table_schemas' and 'semantic_cache' collections")
+    fewshot_exemplars_collection = chroma_client.get_or_create_collection(
+        name="fewshot_exemplars",
+        metadata=_COLLECTION_METADATA
+    )
+
+    log.info("ChromaDB: Successfully initialized 'table_schemas', 'semantic_cache', and 'fewshot_exemplars' collections")
 except Exception as e:
     log.error(f"ChromaDB: Failed to create collections: {e}")
     raise RuntimeError(f"ChromaDB collection creation error: {e}")
@@ -87,6 +92,21 @@ def get_semantic_cache_collection():
         return semantic_cache_collection
 
 
+def get_fewshot_exemplars_collection():
+    """Get the vector database collection that stores few-shot Q/A query exemplars.
+
+    Returns:
+        Collection: The active fewshot_exemplars collection.
+    """
+    try:
+        return chroma_client.get_or_create_collection(
+            name="fewshot_exemplars",
+            metadata=_COLLECTION_METADATA
+        )
+    except Exception:
+        return fewshot_exemplars_collection
+
+
 def reset_semantic_cache_collection():
     """Wipe and recreate the semantic cache folder in the local vector database.
 
@@ -121,4 +141,28 @@ def reset_table_schemas_collection():
         metadata=_COLLECTION_METADATA
     )
     return table_schemas_collection
+
+
+def reset_fewshot_exemplars_collection(metadata: dict | None = None):
+    """Wipe and recreate the fewshot_exemplars collection in the local vector database.
+
+    Args:
+        metadata (dict | None, optional): Custom metadata dict (e.g. SHA-256 hash). Defaults to None.
+
+    Returns:
+        Collection: The fresh, empty fewshot_exemplars collection object.
+    """
+    global fewshot_exemplars_collection
+    try:
+        chroma_client.delete_collection("fewshot_exemplars")
+    except Exception:
+        pass
+    meta = dict(_COLLECTION_METADATA)
+    if metadata:
+        meta.update(metadata)
+    fewshot_exemplars_collection = chroma_client.get_or_create_collection(
+        name="fewshot_exemplars",
+        metadata=meta
+    )
+    return fewshot_exemplars_collection
 

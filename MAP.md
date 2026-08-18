@@ -42,7 +42,7 @@
 - [db/table_selector.py](file:///e:/CHATBOT_ADK/db/table_selector.py) — VectorRAG search narrowing 14 WMS tables down to 2-4 query-relevant tables via ChromaDB cosine similarity.
 - [db/indexer.py](file:///e:/CHATBOT_ADK/db/indexer.py) — ChromaDB vector table indexer embedding CSN table metadata into the `table_schemas` collection.
 - [db/engine.py](file:///e:/CHATBOT_ADK/db/engine.py) — SQLAlchemy MySQL database connection engine singleton (`mysql+pymysql`).
-- [db/chromadb.py](file:///e:/CHATBOT_ADK/db/chromadb.py) — ChromaDB client factory managing vector collections for table schemas and semantic cache.
+- [db/chromadb.py](file:///e:/CHATBOT_ADK/db/chromadb.py) — ChromaDB client factory managing persistent vector collections (`table_schemas`, `semantic_cache`, `fewshot_exemplars`).
 - [db/aliases.py](file:///e:/CHATBOT_ADK/db/aliases.py) — Table and column synonym dictionary mappings for schema grounding.
 - [db/similarity.py](file:///e:/CHATBOT_ADK/db/similarity.py) — Vector cosine similarity mathematical utility function.
 
@@ -65,7 +65,7 @@
 ## 5. Prompt System & Token Optimization
 
 - [prompts/loader.py](file:///e:/CHATBOT_ADK/prompts/loader.py) — YAML prompt loader managing Gemini context caching static prefix invariance and adaptive prompt assembly.
-- [prompts/example_selector.py](file:///e:/CHATBOT_ADK/prompts/example_selector.py) — Vector RAG few-shot exemplar selector with adaptive dynamic Top-K complexity classification (K=1, K=3, K=5).
+- [prompts/example_selector.py](file:///e:/CHATBOT_ADK/prompts/example_selector.py) — Vector RAG few-shot exemplar selector backed by persistent ChromaDB collection `fewshot_exemplars` with SHA-256 collection metadata hash invalidation.
 - [prompts/rule_selector.py](file:///e:/CHATBOT_ADK/prompts/rule_selector.py) — Dynamic rule selector filtering mandatory core rules vs active table scenario rules.
 - [prompts/config/instructions.yml](file:///e:/CHATBOT_ADK/prompts/config/instructions.yml) — System prompt directives for WMS SQL agent, router, rephraser, and shared SQL rules.
 - [prompts/config/examples.yml](file:///e:/CHATBOT_ADK/prompts/config/examples.yml) — Few-shot SQL Q&A exemplars organized by intent domain.
@@ -97,11 +97,14 @@
 
 ## 8. Testing & Automation Suite
 
-- [tests/test_compact_schema.py](file:///e:/CHATBOT_ADK/tests/test_compact_schema.py) — Unit tests for Proposal 1 Compact Schema Notation (CSN) schema generation and token reduction.
-- [tests/test_context_caching_prefix.py](file:///e:/CHATBOT_ADK/tests/test_context_caching_prefix.py) — Unit tests for Proposal 2 Gemini 2.5 Flash static prefix prompt invariance.
-- [tests/test_adaptive_example_selector.py](file:///e:/CHATBOT_ADK/tests/test_adaptive_example_selector.py) — Unit tests for Proposal 3 Adaptive Dynamic Top-K exemplar selection (K=1, K=3, K=5).
-- [tests/test_history_compaction.py](file:///e:/CHATBOT_ADK/tests/test_history_compaction.py) — Unit tests for Proposal 4 Enhanced Chat History Compaction (`[EXECUTED_SQL: ... | RESULT: ...]` tags).
-- [tests/test_redis_integration.py](file:///e:/CHATBOT_ADK/tests/test_redis_integration.py) — Integration tests for Redis session store, exact cache, semantic cache, and rate limiter.
+- [tests/test_example_selector.py](file:///e:/CHATBOT_ADK/tests/test_example_selector.py) — Unit tests for `prompts/example_selector.py` (`select_top_k_examples`).
+- [tests/test_schema.py](file:///e:/CHATBOT_ADK/tests/test_schema.py) — Unit tests for `db/schema.py` (`get_schema`, Compact Schema Notation token reduction).
+- [tests/test_indexer.py](file:///e:/CHATBOT_ADK/tests/test_indexer.py) — Unit tests for `db/indexer.py` (`build_rich_table_doc`).
+- [tests/test_loader.py](file:///e:/CHATBOT_ADK/tests/test_loader.py) — Unit tests for `prompts/loader.py` (`get_trimmed_coder_sql_directive`, context caching static prefix invariance).
+- [tests/test_sql_agent.py](file:///e:/CHATBOT_ADK/tests/test_sql_agent.py) — Unit tests for `agents/sql_agent.py` (`build_compact_history_summary`, `format_db_result_deterministic`).
+- [tests/test_router_agent.py](file:///e:/CHATBOT_ADK/tests/test_router_agent.py) — Unit tests for `agents/router_agent.py` (`_is_valid_rephrased_question`).
+- [tests/test_runner.py](file:///e:/CHATBOT_ADK/tests/test_runner.py) — Unit tests for `adk/runner.py` (`_build_messages` chat history compaction).
+- [tests/test_redis_store.py](file:///e:/CHATBOT_ADK/tests/test_redis_store.py) — Unit & integration tests for `redis_store/` (`RedisClientManager`, `RedisExactCache`, `RedisSemanticCache`, `RedisSessionStore`, `RedisRateLimiter`).
 - [tests/locustfile.py](file:///e:/CHATBOT_ADK/tests/locustfile.py) — Locust performance load testing script simulating concurrent chat users.
 - [pytest.ini](file:///e:/CHATBOT_ADK/pytest.ini) — Pytest configuration file enabling automatic local package import resolution (`pythonpath = .`).
 - [run_server.ps1](file:///e:/CHATBOT_ADK/run_server.ps1) — PowerShell launcher script spinning up FastAPI backend and Streamlit UI servers concurrently.
@@ -120,8 +123,8 @@ streamlit run app.py
 # 3. Run Both Servers Concurrently
 .\run_server.ps1
 
-# 4. Run Token Optimization & Feature Unit Tests
-pytest tests/test_compact_schema.py tests/test_context_caching_prefix.py tests/test_adaptive_example_selector.py tests/test_history_compaction.py -v
+# 4. Run Entire Test Suite
+pytest tests/ -v
 
 # 5. Clear Caches & Hot-Reload Prompts/Guardrails via API
 curl -X POST http://localhost:8000/clear-cache

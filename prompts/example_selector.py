@@ -1,43 +1,33 @@
 """
-example_selector.py — Vector Similarity RAG Selector for Few-Shot Query Exemplars.
+example_selector.py — Persistent ChromaDB Vector RAG Selector for Few-Shot Exemplars.
 
-Dynamically selects the top-K (default 5) most semantically relevant Q/A
-exemplars matching the user's question, reducing system prompt token size by 80%.
+Stores pre-computed exemplar question embeddings in ChromaDB collection 'fewshot_exemplars'
+with SHA-256 metadata hash invalidation for zero-latency runtime query matching.
 """
 
-# ── MODULE TAG: RAG Few-Shot Example Selector ──
-import math
+# ── MODULE TAG: RAG Few-Shot Example Selector (ChromaDB) ──
+import json
+import hashlib
 from typing import Optional, List, Dict, Any, Set
 
 from core.config.settings import DEFAULT_EMBED_MODEL
 from core.config.logger import get_logger
 from core.llm.embedder import TextEmbedder
+from db.chromadb import (
+    get_fewshot_exemplars_collection,
+    reset_fewshot_exemplars_collection,
+)
 
 log = get_logger(__name__)
 
-
-def _cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
-    """Compute cosine similarity score between two float vectors.
-
-    Args:
-        vec1 (list[float]): First vector.
-        vec2 (list[float]): Second vector.
-
-    Returns:
-        float: Cosine similarity score value.
-    """
-    dot = sum(a * b for a, b in zip(vec1, vec2))
-    mag1 = math.sqrt(sum(a * a for a in vec1)) or 1.0
-    mag2 = math.sqrt(sum(b * b for b in vec2)) or 1.0
-    return dot / (mag1 * mag2)
+DEFAULT_TOP_K = 5
 
 
 class ExampleSelector:
-    """RAG-backed selector computing vector embeddings for Q/A exemplars in examples.yml.
+    """ChromaDB vector store backed selector computing embeddings for Q/A exemplars in examples.yml.
 
     Attributes:
         _embedder: TextEmbedder model instance.
-        _exemplar_cache: Cache mapping intent strings to indexed exemplar dicts.
     """
 
     def __init__(self, embedder: Optional[TextEmbedder] = None) -> None:
@@ -47,59 +37,79 @@ class ExampleSelector:
             embedder (Optional[TextEmbedder], optional): TextEmbedder instance. Defaults to None.
         """
         self._embedder = embedder or TextEmbedder(embed_model=DEFAULT_EMBED_MODEL)
-        self._exemplar_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-    def _index_examples(self, intent: str, raw_examples: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """Compute and cache embedding vectors for all exemplar questions of an intent.
+    @staticmethod
+    def _compute_examples_hash(raw_examples_dict: Dict[str, Any]) -> str:
+        """Compute SHA-256 hash digest of raw examples dictionary to detect content changes.
 
         Args:
-            intent (str): Intent domain string.
-            raw_examples (List[Dict[str, str]]): List of raw Q/A exemplar dicts.
+            raw_examples_dict (Dict[str, Any]): Dictionary of intent -> list of Q/A exemplars.
 
         Returns:
-            List[Dict[str, Any]]: List of indexed exemplar dicts with pre-computed vector embeddings.
+            str: SHA-256 hexadecimal string digest.
         """
-        indexed = []
-        for ex in raw_examples:
-            q = ex.get("q", "").strip()
-            a = ex.get("a", "").strip()
-            if not q or not a:
+        serialized = json.dumps(raw_examples_dict, sort_keys=True)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def precompute_embeddings(self, raw_examples_dict: Dict[str, Any], force_recompute: bool = False) -> None:
+        """Pre-compute and index all exemplar question vector embeddings into ChromaDB.
+
+        Args:
+            raw_examples_dict (Dict[str, Any]): Dictionary mapping domain intents to lists of Q/A exemplars.
+            force_recompute (bool, optional): If True, forces collection re-indexing. Defaults to False.
+        """
+        if not raw_examples_dict:
+            return
+
+        curr_hash = self._compute_examples_hash(raw_examples_dict)
+        collection = get_fewshot_exemplars_collection()
+
+        stored_meta = collection.metadata or {}
+        stored_hash = stored_meta.get("hash")
+
+        if not force_recompute and stored_hash == curr_hash and collection.count() > 0:
+            log.info(
+                f"ExampleSelector: ChromaDB collection 'fewshot_exemplars' hash matched "
+                f"({curr_hash[:8]}...). Count={collection.count()}. Skipping re-indexing."
+            )
+            return
+
+        log.info("ExampleSelector: Re-indexing exemplars into ChromaDB collection 'fewshot_exemplars'...")
+        collection = reset_fewshot_exemplars_collection(metadata={"hash": curr_hash})
+
+        documents: List[str] = []
+        embeddings: List[List[float]] = []
+        metadatas: List[Dict[str, Any]] = []
+        ids: List[str] = []
+
+        for intent, raw_examples in raw_examples_dict.items():
+            if not isinstance(raw_examples, list):
                 continue
-            vec = self._embedder.embed(q)
-            indexed.append({
-                "q": q,
-                "a": a,
-                "vector": vec,
-            })
-        log.info(f"ExampleSelector: Indexed {len(indexed)} exemplars for intent '{intent}'")
-        return indexed
 
-    def determine_adaptive_k(self, question: str, focused_tables: Optional[Set[str]] = None) -> int:
-        """Dynamically determine optimal Top-K exemplar limit based on query syntax complexity.
+            for idx, ex in enumerate(raw_examples):
+                if not isinstance(ex, dict):
+                    continue
+                q = ex.get("q", "").strip()
+                a = ex.get("a", "").strip()
+                if not q or not a:
+                    continue
 
-        Args:
-            question (str): User question string.
-            focused_tables (Optional[Set[str]], optional): Grounded table scope set. Defaults to None.
+                vec = self._embedder.embed(q)
+                doc_id = hashlib.md5(f"{intent}_{idx}_{q}".encode("utf-8")).hexdigest()
 
-        Returns:
-            int: Calculated K limit (1 for simple, 3 for intermediate, 5 for complex).
-        """
-        q_lower = question.lower().strip()
-        tables_count = len(focused_tables) if focused_tables else 1
+                documents.append(q)
+                embeddings.append(vec)
+                metadatas.append({"intent": intent, "q": q, "a": a})
+                ids.append(doc_id)
 
-        complex_indicators = ["most", "least", "highest", "lowest", "compare", "chain", "activity log", "between"]
-        if any(ci in q_lower for ci in complex_indicators) or tables_count >= 3:
-            return 5
-
-        intermediate_indicators = ["join", "group by", "average", "avg", "per warehouse", "status breakdown", "mapping", "vendor"]
-        if any(ii in q_lower for ii in intermediate_indicators) or tables_count == 2:
-            return 3
-
-        simple_starts = ["how many", "count", "list", "show all", "what is the status", "total"]
-        if any(q_lower.startswith(s) for s in simple_starts) or tables_count <= 1:
-            return 1
-
-        return 3
+        if ids:
+            collection.upsert(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
+            log.info(f"ExampleSelector: Upserted {len(ids)} exemplars into ChromaDB 'fewshot_exemplars'.")
 
     def select_top_k_examples(
         self,
@@ -109,7 +119,7 @@ class ExampleSelector:
         top_k: Optional[int] = None,
         focused_tables: Optional[Set[str]] = None,
     ) -> str:
-        """Rank exemplars by vector cosine similarity to question and return formatted Markdown string.
+        """Rank exemplars using ChromaDB vector cosine similarity and return formatted Markdown string.
 
         Args:
             question (str): User question string.
@@ -124,42 +134,50 @@ class ExampleSelector:
         if not raw_examples:
             return ""
 
-        effective_k = top_k if top_k is not None else self.determine_adaptive_k(question, focused_tables)
+        effective_k = top_k if top_k is not None else DEFAULT_TOP_K
+        collection = get_fewshot_exemplars_collection()
 
-        if intent not in self._exemplar_cache or len(self._exemplar_cache[intent]) != len(raw_examples):
-            self._exemplar_cache[intent] = self._index_examples(intent, raw_examples)
-
-        exemplars = self._exemplar_cache[intent]
-        if not exemplars:
-            return ""
+        # If ChromaDB collection is empty, run auto pre-computation
+        if collection.count() == 0 and raw_examples:
+            self.precompute_embeddings({intent: raw_examples})
+            collection = get_fewshot_exemplars_collection()
 
         q_vec = self._embedder.embed(question)
 
-        scored = []
-        for ex in exemplars:
-            score = _cosine_similarity(q_vec, ex["vector"])
-            scored.append((score, ex))
+        try:
+            results = collection.query(
+                query_embeddings=[q_vec],
+                n_results=effective_k,
+                where={"intent": intent},
+            )
+            matched_meta = results.get("metadatas", [[]])[0] if results else []
+        except Exception as e:
+            log.warning(f"ExampleSelector: ChromaDB query failed ({e}). Falling back to raw list.")
+            matched_meta = raw_examples[:effective_k]
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_matches = scored[:effective_k]
+        if not matched_meta:
+            return ""
 
         log.info(
-            f"ExampleSelector: Selected top-{len(top_matches)} (adaptive_k={effective_k}) exemplars for '{question[:50]}' "
-            f"(sim range: {top_matches[0][0]:.3f} to {top_matches[-1][0]:.3f})"
+            f"ExampleSelector: Selected top-{len(matched_meta)} (adaptive_k={effective_k}) exemplars "
+            f"for '{question[:50]}'"
         )
 
-        lines = [f"Relevant Query Examples (Top-{len(top_matches)}):"]
-        for _, ex in top_matches:
-            lines.append(f"Q: {ex['q']}")
-            lines.append(f"A: {ex['a']}")
-            lines.append("")
+        lines = [f"Relevant Query Examples (Top-{len(matched_meta)}):"]
+        for ex in matched_meta:
+            q = ex.get("q", "").strip() if isinstance(ex, dict) else ""
+            a = ex.get("a", "").strip() if isinstance(ex, dict) else ""
+            if q and a:
+                lines.append(f"Q: {q}")
+                lines.append(f"A: {a}")
+                lines.append("")
 
         return "\n".join(lines).strip()
 
     def clear_cache(self) -> None:
-        """Clear cached exemplar vectors from memory."""
-        self._exemplar_cache.clear()
-        log.info("ExampleSelector: Exemplar vector cache cleared.")
+        """Wipe and reset ChromaDB 'fewshot_exemplars' collection."""
+        reset_fewshot_exemplars_collection()
+        log.info("ExampleSelector: ChromaDB 'fewshot_exemplars' collection wiped.")
 
 
 # Singleton instance

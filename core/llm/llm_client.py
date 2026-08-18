@@ -212,3 +212,50 @@ async def ask_llm_async(system_prompt: str, user_msg: str, model_name: str = Non
             log.error(f"Gemini API async call failed after retries ({model}): {e}")
             raise RuntimeError(f"Error calling Gemini API async ({model}): {e}")
 
+
+def is_rate_limit_error(e: Exception) -> bool:
+    """Check if an exception is caused by an LLM rate limit or quota exceeded error (HTTP 429).
+
+    Args:
+        e (Exception): Exception caught during LLM invocation.
+
+    Returns:
+        bool: True if error indicates quota/rate limit exhaustion, False otherwise.
+    """
+    if not e:
+        return False
+    from openai import RateLimitError
+    if isinstance(e, RateLimitError):
+        return True
+    
+    err_str = str(e).lower()
+    if any(code in err_str for code in ["429", "resource_exhausted", "quota exceeded", "rate limit", "ratelimit"]):
+        return True
+    
+    status_code = getattr(e, "status_code", None) or getattr(e, "code", None)
+    if status_code == 429:
+        return True
+        
+    return False
+
+
+def format_llm_api_error(e: Exception) -> str:
+    """Format an LLM API exception into a clear, user-friendly Markdown message.
+
+    Args:
+        e (Exception): Exception object from LLM API call.
+
+    Returns:
+        str: Friendly error message string to display to the user.
+    """
+    if is_rate_limit_error(e):
+        return (
+            "⚠️ **API Quota Exceeded (429 Rate Limit)**: You have exceeded your Gemini API request quota. "
+            "Please wait a few moments before trying again or check your Gemini API plan and billing details."
+        )
+    return (
+        f"⚠️ **LLM Service Error**: Unable to complete your request due to an AI model service error. "
+        f"(Details: {str(e)[:150]})"
+    )
+
+

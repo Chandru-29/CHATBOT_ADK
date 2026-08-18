@@ -108,11 +108,12 @@ class ADKAgent:
             }
         except Exception as e:
             log.error(f"ADKAgent '{self.name}' execution error: {e}")
+            from core.llm.llm_client import format_llm_api_error
             return {
                 "sql": None,
                 "columns": [],
                 "rows": [],
-                "natural_answer": None,
+                "natural_answer": format_llm_api_error(e),
                 "error": str(e),
                 "attempts": 1,
                 "agent_name": self.name,

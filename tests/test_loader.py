@@ -1,5 +1,7 @@
 """
-test_context_caching_prefix.py — Unit tests for Gemini 2.5 Flash Context Caching System Prompt Prefix Invariance.
+test_loader.py — Unit tests for prompts.loader module:
+- get_trimmed_coder_sql_directive
+- Static prompt prefix context caching invariance
 """
 
 import pytest
@@ -13,7 +15,7 @@ def extract_prompt_static_prefix(full_prompt: str) -> str:
     return full_prompt
 
 
-def test_prefix_invariance_across_different_queries():
+def test_get_trimmed_coder_sql_directive_prefix_invariance():
     """
     Verify that the static prompt prefix (System Role + Core Mandatory Rules + Output Format)
     is 100% byte-for-byte identical across different queries and table selections.
@@ -38,7 +40,7 @@ def test_prefix_invariance_across_different_queries():
     assert len(prefix_a) > 500, "Static prefix too short, expected system role + mandatory core rules."
 
 
-def test_dynamic_context_placement_after_prefix():
+def test_get_trimmed_coder_sql_directive_dynamic_context_placement():
     """Verify that schema_context, scenario_rules, and exemplars are placed in the dynamic suffix."""
     schema = "Table: GRN(grnId:INT NOT NULL, vendorCode:VARCHAR NOT NULL)"
     tables = {"GRN"}

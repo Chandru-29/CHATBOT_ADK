@@ -91,7 +91,7 @@ class RedisClientManager:
         """Safely disconnect from the Redis server."""
         if self._client is not None:
             try:
-                await self._client.close()
+                await self._client.aclose()
                 log.info("RedisClientManager: Connection closed cleanly.")
             except Exception as e:
                 log.warning(f"RedisClientManager: Error closing connection: {e}")

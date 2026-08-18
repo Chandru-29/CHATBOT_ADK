@@ -99,6 +99,95 @@ def needs_rephrasing(question: str, chat_history: list) -> bool:
     return True
 
 
+def _is_valid_rephrased_question(rephrased: str, original: str) -> bool:
+    """Validate that the rephrased question is a complete, non-dangling question sentence.
+
+    Args:
+        rephrased (str): The candidate rephrased string from LLM.
+        original (str): The original user question.
+
+    Returns:
+        bool: True if valid, False if incomplete or cut off.
+    """
+    if not rephrased:
+        return False
+    words = rephrased.strip().split()
+    if len(words) < 3:
+        return False
+    # Check if cut off prematurely (ends with dangling preposition, determiner, or verb)
+    dangling_words = {
+        "the", "of", "a", "an", "in", "to", "for", "and", "or", "with",
+        "at", "by", "from", "on", "about", "into", "over", "after", "is", "are", "were", "was"
+    }
+    last_word = words[-1].strip("?.,!\"'").lower()
+    if last_word in dangling_words:
+        return False
+    return True
+
+
+async def _rephrase_question_async(question: str, chat_history: list) -> str:
+    """Rewrite a follow-up question into a clear, standalone question using Gemini LLM.
+
+    Args:
+        question (str): The raw follow-up user question.
+        chat_history (list): Conversation history turns.
+
+    Returns:
+        str: Rephrased standalone question string, or original question if rephrasing fails/invalid.
+    """
+    if not needs_rephrasing(question, chat_history):
+        return question
+
+    log.info("Router: [Option A Triggered] Pronoun/Ellipsis detected in multi-turn question. Rephrasing...")
+    from core.llm.llm_client import ask_llm_async
+
+    rephrase_system_prompt = (
+        "You are an expert query contextualizer.\n"
+        "Given a conversation history and a follow-up question containing ambiguous pronouns or short expressions "
+        "(e.g., 'it', 'them', 'these', 'how many of them'), rewrite the follow-up question into a complete, clear, standalone question "
+        "by replacing pronouns with the explicit subjects/entities mentioned in the history.\n\n"
+        "Rules:\n"
+        "1. Output ONLY the rephrased standalone question text. Do not add explanations, intros, markdown fences, or quotes.\n"
+        "2. Maintain original intent and fix minor typos (e.g., 'deleiveried' -> 'delivered').\n"
+        "3. Ensure the rephrased question is a complete sentence ending with a question mark.\n\n"
+        "Examples:\n"
+        "History:\n"
+        "User: How many open picklists do we have?\n"
+        "Assistant: There are currently 121 open picklists.\n"
+        "Follow-up question: how many of them were deleiveried\n"
+        "Rephrased question: How many of the open picklists were delivered?\n\n"
+        "History:\n"
+        "User: Show me all items in warehouse WH-01\n"
+        "Assistant: Found 5 items in WH-01.\n"
+        "Follow-up question: list their quantities\n"
+        "Rephrased question: List the quantities for items in warehouse WH-01?\n"
+    )
+
+    history_text = "\n".join(
+        f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
+        for msg in chat_history[-HISTORY_WINDOW:]
+    )
+    user_msg = f"Conversation History:\n{history_text}\n\nFollow-up question: {question}"
+
+    try:
+        rephrased = await ask_llm_async(
+            rephrase_system_prompt,
+            user_msg,
+            model_name=REPHRASER_MODEL_NAME or ROUTER_MODEL_NAME,
+            max_tokens=128
+        )
+        rephrased_clean = rephrased.strip().strip('"\'')
+        if _is_valid_rephrased_question(rephrased_clean, question):
+            log.info(f"Router: Rephrased '{question}' -> '{rephrased_clean}'")
+            return rephrased_clean
+        else:
+            log.warning(f"Router: Rephrased output '{rephrased_clean}' failed validation (dangling/incomplete). Falling back to raw question.")
+    except Exception as e:
+        log.warning(f"Router: Rephrasing failed ({e}), using raw question.")
+
+    return question
+
+
 # ── STITCHGUARD GUARDRAIL: Layer 2 - Intent Classification & Routing Engine ──
 async def rephrase_and_route(question: str, chat_history: list) -> tuple[str, str]:
     """Rewrite follow-up questions to be self-contained and categorize the user's intent.
@@ -112,52 +201,7 @@ async def rephrase_and_route(question: str, chat_history: list) -> tuple[str, st
             - str: The clean, standalone question text.
             - str: The intent category (`"WMS_AGENT"` for database queries, `"GENERAL"` for chat).
     """
-    # ── STEP 1: CONVERSATIONAL PRE-FILTERING (GREETINGS, THANKS, FAREWELLS) ────────
-    if is_simple_conversational_turn(question):
-        log.info(f"Router: [Rule Fast-Path] simple greeting detected: '{question[:60]}'")
-        return question, "GENERAL"
-
-    # ── STEP 2: OPTION A CONDITIONAL REPHRASING CHECK ──────────────────────────────
-    final_question = question
-    if needs_rephrasing(question, chat_history):
-        log.info("Router: [Option A Triggered] Pronoun/Ellipsis detected in multi-turn question. Rephrasing...")
-        from core.llm.llm_client import ask_llm_async
-
-        rephrase_system_prompt = (
-            "You are an expert query contextualizer. "
-            "Given conversation history and a follow-up question, rewrite the question "
-            "to be a clear, standalone question. Do NOT answer the question, output ONLY the rephrased question text."
-        )
-
-        history_text = "\n".join(
-            f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
-            for msg in chat_history[-HISTORY_WINDOW:]
-        )
-        user_msg = f"Conversation History:\n{history_text}\n\nFollow-up question: {question}"
-
-        try:
-            rephrased = await ask_llm_async(
-                rephrase_system_prompt,
-                user_msg,
-                model_name=REPHRASER_MODEL_NAME or ROUTER_MODEL_NAME,
-                max_tokens=128
-            )
-            rephrased_clean = rephrased.strip().strip('"\'')
-            if rephrased_clean:
-                log.info(f"Router: Rephrased '{question}' -> '{rephrased_clean}'")
-                final_question = rephrased_clean
-        except Exception as e:
-            log.warning(f"Router: Rephrasing failed ({e}), using raw question.")
-
-    # ── STEP 3: ZERO-LLM INTENT CLASSIFICATION ON CONTEXTUALIZED QUESTION ──────────
-    from agents.intent_classifier import get_intent_classifier
-    clf = get_intent_classifier()
-    intent, score = clf.predict_with_score(final_question)
-    if score < 0.30 and intent == "WMS_AGENT":
-        log.info(f"Router: Low similarity score ({score:.4f} < 0.30) -> Defaulting to GENERAL intent")
-        intent = "GENERAL"
-    log.info(f"Router: [HF Embedding Classifier] intent={intent} (score={score:.4f}) for query='{final_question[:60]}'")
-
+    final_question, intent, _ = await rephrase_and_route_with_score(question, chat_history)
     return final_question, intent
 
 
@@ -177,31 +221,7 @@ async def rephrase_and_route_with_score(question: str, chat_history: list) -> tu
     if is_simple_conversational_turn(question):
         return question, "GENERAL", 1.0
 
-    final_question = question
-    if needs_rephrasing(question, chat_history):
-        from core.llm.llm_client import ask_llm_async
-        rephrase_system_prompt = (
-            "You are an expert query contextualizer. "
-            "Given conversation history and a follow-up question, rewrite the question "
-            "to be a clear, standalone question. Do NOT answer the question, output ONLY the rephrased question text."
-        )
-        history_text = "\n".join(
-            f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
-            for msg in chat_history[-HISTORY_WINDOW:]
-        )
-        user_msg = f"Conversation History:\n{history_text}\n\nFollow-up question: {question}"
-        try:
-            rephrased = await ask_llm_async(
-                rephrase_system_prompt,
-                user_msg,
-                model_name=REPHRASER_MODEL_NAME or ROUTER_MODEL_NAME,
-                max_tokens=128
-            )
-            rephrased_clean = rephrased.strip().strip('"\'')
-            if rephrased_clean:
-                final_question = rephrased_clean
-        except Exception:
-            pass
+    final_question = await _rephrase_question_async(question, chat_history)
 
     from agents.intent_classifier import get_intent_classifier
     clf = get_intent_classifier()

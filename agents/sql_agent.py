@@ -14,7 +14,7 @@ from collections import defaultdict
 from typing import AsyncGenerator
 from mcp import ClientSession
 
-from core.llm.llm_client import get_llm_async_client, get_async_client
+from core.llm.llm_client import get_llm_async_client, get_async_client, is_rate_limit_error, format_llm_api_error
 from core.config.settings import MODEL_NAME, AGENT_MAX_STEPS
 from core.config.logger import get_logger
 from security.guardrails import (
@@ -341,7 +341,10 @@ def format_db_result_deterministic(db_output: str, question: str = "") -> str:
     # ── CASE 1: Scalar Metric Result (1 row, 1 column) ──
     if len(rows) == 1 and len(columns) == 1:
         val = str(rows[0][0])
-        col_name = columns[0].lower()
+        col_raw = columns[0]
+        # Split camelCase column names if present (e.g. openPicklists -> open Picklists)
+        col_split = re.sub(r'([a-z])([A-Z])', r'\1 \2', col_raw)
+        col_name = col_split.lower()
         is_aggregate = any(agg in col_name for agg in ["count", "sum", "avg", "min", "max"])
         is_count_question = any(q_word in question.lower() for q_word in ["how many", "total", "count", "number of"])
 
@@ -353,11 +356,35 @@ def format_db_result_deterministic(db_output: str, question: str = "") -> str:
             ).strip()
             stop = {"there", "which", "where", "about", "total", "count",
                     "many", "much", "what", "show", "tell", "list",
-                    "gives", "fetch", "find", "query", "give", "please", "provide"}
-            nouns = [w for w in question.lower().split() if len(w) > 4 and w not in stop]
-            label = nouns[0] if nouns else (col_label or "record")
+                    "gives", "fetch", "find", "query", "give", "please", "provide",
+                    "have", "status"}
+            clean_col_words = [w for w in col_label.split() if w not in {"total", "count"}]
+            clean_col_label = " ".join(clean_col_words)
+            clean_question_words = [re.sub(r'^\W+|\W+$', '', w) for w in question.lower().split()]
+            nouns = [w for w in clean_question_words if len(w) > 4 and w not in stop]
+            
+            raw_label = clean_col_label or (nouns[0] if nouns else "record")
+            label = raw_label
+            verb = "are"
+            
+            try:
+                numeric_val = int(val)
+                if numeric_val == 1:
+                    verb = "is"
+                    if label.endswith("s") and not label.endswith("ss") and len(label) > 3:
+                        label = label[:-1]
+                else:
+                    verb = "are"
+                    if not label.endswith("s"):
+                        if label.endswith("y") and not label.endswith("ay") and not label.endswith("ey"):
+                            label = label[:-1] + "ies"
+                        else:
+                            label = label + "s"
+            except ValueError:
+                pass
+
             log.info(f"[DeterministicFormatter] scalar: value={val!r} label={label!r}")
-            return f"There are currently **{val}** {label} in the database."
+            return f"There {verb} currently **{val}** {label} in the database."
 
     # ── CASE 2: Single-Column List (N rows, 1 column) ──
     if len(columns) == 1:
@@ -509,8 +536,31 @@ async def run_sql_agent(
             assistant_msg = {"role": "assistant", "content": raw_text}
         except Exception as e:
             log.error(f"Gemini API call error in sql_agent: {e}")
-            raw_text = ""
-            assistant_msg = {"role": "assistant", "content": ""}
+            error_msg = format_llm_api_error(e)
+            err_title = "Quota/Rate Limit Exceeded (HTTP 429)" if is_rate_limit_error(e) else f"LLM API Error: {str(e)[:100]}"
+
+            if stream:
+                from fastapi.responses import StreamingResponse
+
+                async def _err_gen():
+                    yield error_msg
+
+                return StreamingResponse(
+                    _err_gen(),
+                    media_type="text/event-stream",
+                    headers={"x-agent-name": agent_name, "x-error": err_title},
+                )
+
+            result = _build_result(
+                used_sql=None,
+                final_answer=error_msg,
+                attempts=step + 1,
+                agent_name=agent_name,
+                error=err_title,
+            )
+            _step_counts[step + 1] += 1
+            log.warning(f"SqlAgent: early exit due to LLM API error | agent={agent_name} | error={e}")
+            return result
 
         tool_calls = None
 
@@ -719,6 +769,7 @@ async def run_sql_agent(
                     }
                     return StreamingResponse(_token_gen(), media_type="text/event-stream", headers=headers)
 
+                final_answer = format_db_result_deterministic(db_output, question)
                 hist_summary = build_compact_history_summary(used_sql, db_output)
                 result = _build_result(used_sql, final_answer, step + 1, agent_name, history_summary=hist_summary)
                 _record_cache_and_steps(result, used_sql, intent, agent_name, question, cache_key, api_cache, step)
